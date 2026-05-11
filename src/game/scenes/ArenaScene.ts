@@ -1346,9 +1346,17 @@ export class ArenaScene extends Phaser.Scene {
 
   private handleResize = (gameSize: Phaser.Structs.Size): void => {
     const { width, height } = gameSize;
-    if (width === 0 || height === 0) return;
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return;
+    }
 
+    /** Physics world + camera must agree on the new bounds — RESIZE updates the viewport but not setBounds. */
     this.physics.world.setBounds(0, 0, width, height);
+    const camera = this.cameras.main;
+    if (camera) {
+      camera.setSize(width, height);
+      camera.setBounds(0, 0, width, height);
+    }
 
     /** Backgrounds. */
     this.drawSky(width, height);
@@ -1378,16 +1386,40 @@ export class ArenaScene extends Phaser.Scene {
     }
     this.drawPlatforms();
 
-    /** Player / enemy clamping. */
+    /** Player / enemy clamping into the new bounds. */
     const floorY = height - GROUND_HEIGHT - PLAYER_HEIGHT / 2;
     if (this.player) {
-      this.player.x = Phaser.Math.Clamp(this.player.x, PLAYER_WIDTH / 2, width - PLAYER_WIDTH / 2);
-      if (this.player.y > floorY) this.player.y = floorY;
+      const clampedX = Phaser.Math.Clamp(
+        this.player.x,
+        PLAYER_WIDTH / 2,
+        Math.max(PLAYER_WIDTH / 2, width - PLAYER_WIDTH / 2),
+      );
+      const forcedToFloor = this.player.y > floorY;
+      const clampedY = forcedToFloor ? floorY : this.player.y;
+      if (clampedX !== this.player.x || clampedY !== this.player.y) {
+        this.player.setPosition(clampedX, clampedY);
+        const pBody = this.player.body as Phaser.Physics.Arcade.Body | null;
+        if (pBody) {
+          if (forcedToFloor) {
+            /** Reset clears velocity — appropriate for a hard teleport onto the new floor. */
+            pBody.reset(clampedX, clampedY);
+          } else {
+            pBody.position.x = clampedX - pBody.halfWidth;
+            pBody.position.y = clampedY - pBody.halfHeight;
+          }
+        }
+      }
     }
     if (this.enemy) {
-      this.enemy.x = Phaser.Math.Clamp(this.enemy.x, PLAYER_WIDTH / 2, width - PLAYER_WIDTH / 2);
-      this.enemy.y = floorY;
-      (this.enemy.body as Phaser.Physics.Arcade.Body | null)?.reset(this.enemy.x, this.enemy.y);
+      const clampedX = Phaser.Math.Clamp(
+        this.enemy.x,
+        PLAYER_WIDTH / 2,
+        Math.max(PLAYER_WIDTH / 2, width - PLAYER_WIDTH / 2),
+      );
+      /** Demo enemy is anchored to the floor; live enemy is driven by lerpEnemy so just clamp out of bounds. */
+      const clampedY = this.isDemo ? floorY : Math.min(this.enemy.y, floorY);
+      this.enemy.setPosition(clampedX, clampedY);
+      (this.enemy.body as Phaser.Physics.Arcade.Body | null)?.reset(clampedX, clampedY);
     }
 
     /** HUD. */

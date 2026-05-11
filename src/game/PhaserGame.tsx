@@ -26,16 +26,20 @@ export function PhaserGame(props: PhaserGameProps) {
     if (!containerRef.current || gameRef.current) {
       return;
     }
+    const container = containerRef.current;
+
+    const initialWidth = Math.max(1, container.clientWidth);
+    const initialHeight = Math.max(1, container.clientHeight);
 
     const config: Phaser.Types.Core.GameConfig = {
       type: Phaser.AUTO,
-      parent: containerRef.current,
+      parent: container,
       backgroundColor: '#0b1220',
       scale: {
         mode: Phaser.Scale.RESIZE,
         autoCenter: Phaser.Scale.CENTER_BOTH,
-        width: '100%',
-        height: '100%',
+        width: initialWidth,
+        height: initialHeight,
       },
       physics: {
         default: 'arcade',
@@ -61,16 +65,30 @@ export function PhaserGame(props: PhaserGameProps) {
     };
     game.scene.add('ArenaScene', ArenaScene, true, init);
 
+    /**
+     * Phaser.Scale.RESIZE only polls the parent on window-level events. Flex-driven
+     * size changes (devtools dock, sidebar toggle, layout shifts after image load,
+     * orientation change) can leave the canvas stuck at a stale size. A
+     * ResizeObserver on the container is the canonical fix.
+     */
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width <= 0 || height <= 0) continue;
+        const scale = game.scale;
+        if (Math.abs(scale.width - width) > 0.5 || Math.abs(scale.height - height) > 0.5) {
+          scale.resize(width, height);
+        }
+      }
+    });
+    resizeObserver.observe(container);
+
     return () => {
+      resizeObserver.disconnect();
       gameRef.current?.destroy(true);
       gameRef.current = null;
     };
   }, []);
 
-  return (
-    <div
-      ref={containerRef}
-      className="flex min-h-[min(420px,55vh)] flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950"
-    />
-  );
+  return <div ref={containerRef} className="flex w-full flex-1" />;
 }

@@ -144,16 +144,18 @@ export function MatchPage() {
         Stakes are locked for this match. Use <strong className="text-slate-300">Resign match</strong> if you must leave;
         random navigation is blocked until the match resolves.
       </p>
-      <PhaserGame
-        isDemo={!isLiveMatch}
-        selfPlayerId={playerId ?? ''}
-        opponentPlayerId={opponentPlayer?.playerId ?? ''}
-        selfSeat={selfSeat}
-        stakeSol={roomState?.stakeSol}
-        platforms={matchPlatforms ?? undefined}
-        sendGameMessage={sendGameMessage}
-        subscribeGameMessages={subscribeGameMessages}
-      />
+      <div className="flex min-h-[600px] flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950">
+        <PhaserGame
+          isDemo={!isLiveMatch}
+          selfPlayerId={playerId ?? ''}
+          opponentPlayerId={opponentPlayer?.playerId ?? ''}
+          selfSeat={selfSeat}
+          stakeSol={roomState?.stakeSol}
+          platforms={matchPlatforms ?? undefined}
+          sendGameMessage={sendGameMessage}
+          subscribeGameMessages={subscribeGameMessages}
+        />
+      </div>
     </div>
   );
 }
