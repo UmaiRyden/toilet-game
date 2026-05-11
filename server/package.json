@@ -1,0 +1,14 @@
+{
+  "name": "toiletwifhat-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch main.js",
+    "start": "node main.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "ws": "^8.18.0"
+  }
+}

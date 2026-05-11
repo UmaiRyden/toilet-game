@@ -1,0 +1,36 @@
+@import 'tailwindcss';
+
+@layer base {
+  #root {
+    @apply min-h-dvh;
+  }
+
+  /** Obvious affordance for clickable controls (buttons/links without explicit class still feel interactive). */
+  button:enabled {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  a[href] {
+    cursor: pointer;
+  }
+}
+
+@keyframes room-countdown-bubble {
+  0% {
+    transform: scale(0.45);
+    opacity: 0.45;
+    filter: blur(6px);
+  }
+  45% {
+    transform: scale(1.12);
+    opacity: 1;
+    filter: blur(0);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+    filter: blur(0);
+  }
+}
