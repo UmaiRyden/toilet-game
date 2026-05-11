@@ -2,10 +2,8 @@ import type { RoomSummary } from '../types/realtime';
 
 export type { RoomSummary };
 
-/** REST base URL for the game server. Empty string = same origin (use Vite proxy in dev). */
 export function getApiBaseUrl(): string {
-  const raw = import.meta.env.VITE_API_URL as string | undefined;
-  return raw?.trim().replace(/\/$/, '') ?? '';
+  return 'https://toilet-game-production-3e7a.up.railway.app';
 }
 
 /** Absolute path on `getApiBaseUrl()` or relative to the current origin when base is empty. */
