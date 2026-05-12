@@ -156,23 +156,21 @@ function shuffleArray(arr) {
 /**
  * Generate a random three-platform layout (fractions of canvas).
  *
- * Reference physics (canvas height ≈ 600): single jump apex = 144 px ≈ 0.24 of height,
- * double jump apex = 288 px ≈ 0.48. The yFraction ranges below keep the constraints true
- * for any reasonably-tall canvas:
- *   - lowest top is below the single-jump-from-ground apex (reachable in one jump).
- *   - middle top is above the single-jump apex but inside the double-jump apex from ground.
- *   - highest is outside single-jump-from-middle reach but inside double-jump-from-middle.
- *   - lowest↔middle gap ≥ 0.16, middle↔highest gap ≥ 0.28 — both above the 15 % rule.
+ * Reference physics (gravity 800, jumpV -580):
+ *   single jump apex ≈ 210 px, double jump apex ≈ 420 px.
+ * yFraction bands match the client tuning:
+ *   - lowest 0.65-0.70 (~131-161 px above ground on a 600 px canvas) — single-jump reach.
+ *   - middle 0.45-0.50 (~251-281 px above ground) — double-jump reach.
+ *   - highest 0.25-0.30 (~371-401 px above ground) — double-jump reach.
+ * Min gap between bands is 0.15, satisfying the no-overlap rule.
  * X positions are shuffled across left/center/right thirds.
  *
  * @returns {Array<{ xFraction: number, yFraction: number, wFraction: number }>}
  */
 function generatePlatformLayout() {
-  const lowestY = randRange(0.74, 0.86);
-  const middleY = randRange(0.46, 0.58);
-  const highestMinY = Math.max(0.08, middleY - 0.42);
-  const highestMaxY = middleY - 0.28;
-  const highestY = randRange(highestMinY, highestMaxY);
+  const lowestY = randRange(0.65, 0.7);
+  const middleY = randRange(0.45, 0.5);
+  const highestY = randRange(0.25, 0.3);
 
   const thirds = shuffleArray([
     [0.15, 0.32],

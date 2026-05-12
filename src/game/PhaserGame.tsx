@@ -13,9 +13,11 @@ type PhaserGameProps = {
   selfSeat: number;
   stakeSol?: number;
   platforms?: PlatformSpec[];
+  paused?: boolean;
   sendGameMessage: (payload: Record<string, unknown>) => void;
   subscribeGameMessages: (handler: (msg: GameMessage) => void) => () => void;
   exitToLobby: () => void;
+  onPauseAllowedChange?: (allowed: boolean) => void;
 };
 
 export function PhaserGame(props: PhaserGameProps) {
@@ -66,6 +68,7 @@ export function PhaserGame(props: PhaserGameProps) {
       sendGameMessage: (payload) => propsRef.current.sendGameMessage(payload),
       subscribeGameMessages: (handler) => propsRef.current.subscribeGameMessages(handler),
       exitToLobby: () => propsRef.current.exitToLobby(),
+      onPauseAllowedChange: (allowed) => propsRef.current.onPauseAllowedChange?.(allowed),
     };
     game.scene.add('ArenaScene', ArenaScene, true, init);
 
@@ -93,6 +96,20 @@ export function PhaserGame(props: PhaserGameProps) {
       gameRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const game = gameRef.current;
+    if (!game) return;
+    const sceneManager = game.scene;
+    /** ArenaScene must exist by the time the host toggles pause — it's added in the first effect. */
+    if (props.paused) {
+      if (sceneManager.isActive('ArenaScene') && !sceneManager.isPaused('ArenaScene')) {
+        sceneManager.pause('ArenaScene');
+      }
+    } else if (sceneManager.isPaused('ArenaScene')) {
+      sceneManager.resume('ArenaScene');
+    }
+  }, [props.paused]);
 
   return <div ref={containerRef} className="flex w-full flex-1" />;
 }

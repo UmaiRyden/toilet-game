@@ -35,25 +35,32 @@ const BACKGROUND_KEYS: readonly string[] = [
   'photo_2026-04-28_15-08-54',
 ];
 
-const PLAYER_WIDTH = 32;
-const PLAYER_HEIGHT = 48;
+const PLAYER_WIDTH = 48;
+const PLAYER_HEIGHT = 72;
 const PLAYER_SPEED = 260;
-const JUMP_VELOCITY = -480;
+/**
+ * Jump physics (gravity 800 in PhaserGame config):
+ *   single jump apex height = v² / (2g) = 580² / 1600 ≈ 210 px
+ *   double jump apex height = v² / g     = 580² / 800  ≈ 420 px
+ * Tuned so the new platform yFractions (0.65 / 0.45 / 0.25 mid-bands) are reachable
+ * on the ≈ 600 px reference canvas with single + double jump.
+ */
+const JUMP_VELOCITY = -580;
 
-const PLATFORM_HEIGHT = 14;
+const PLATFORM_HEIGHT = 16;
 
 const BULLET_SIZE = 6;
 const BULLET_SPEED = 900;
-const MUZZLE_OFFSET = 22;
+const MUZZLE_OFFSET = 30;
 const BULLET_DAMAGE = 10;
 
 const MAG_SIZE = 10;
 const RELOAD_MS = 1500;
 
 const MAX_HEALTH = 100;
-const HEALTH_BAR_WIDTH = 52;
+const HEALTH_BAR_WIDTH = 60;
 const HEALTH_BAR_HEIGHT = 7;
-const HEALTH_BAR_OFFSET_Y = 22;
+const HEALTH_BAR_OFFSET_Y = 24;
 
 const HIT_FLASH_MS = 110;
 
@@ -120,6 +127,8 @@ export interface ArenaSceneInitData {
   sendGameMessage: (payload: Record<string, unknown>) => void;
   subscribeGameMessages: (handler: (msg: GameMessage) => void) => () => void;
   exitToLobby: () => void;
+  /** Notifies the host (MatchPage) when pausing should be enabled / disabled. */
+  onPauseAllowedChange?: (allowed: boolean) => void;
 }
 
 export class ArenaScene extends Phaser.Scene {
@@ -197,6 +206,8 @@ export class ArenaScene extends Phaser.Scene {
   private sendGameMessage?: (payload: Record<string, unknown>) => void;
   private subscribeGameMessages?: (handler: (msg: GameMessage) => void) => () => void;
   private exitToLobbyCallback?: () => void;
+  private onPauseAllowedChange?: (allowed: boolean) => void;
+  private lastPauseAllowed = true;
   private unsubscribeGame?: () => void;
   private lastUpdateSentAt = 0;
   private enemyTarget: { x: number; y: number } | null = null;
@@ -227,6 +238,9 @@ export class ArenaScene extends Phaser.Scene {
     this.sendGameMessage = data?.sendGameMessage;
     this.subscribeGameMessages = data?.subscribeGameMessages;
     this.exitToLobbyCallback = data?.exitToLobby;
+    this.onPauseAllowedChange = data?.onPauseAllowedChange;
+    /** Seed to the opposite so the first notifyPauseAllowed in create() always fires. */
+    this.lastPauseAllowed = false;
 
     /** Seat 0 wears cyan, seat 1 wears orange — both clients agree on team colors. */
     this.playerPalette = this.selfSeat === 0 ? CYAN_PALETTE : ORANGE_PALETTE;
@@ -304,11 +318,14 @@ export class ArenaScene extends Phaser.Scene {
       return a;
     };
 
-    const lowestY = rand(0.74, 0.86);
-    const middleY = rand(0.46, 0.58);
-    const highestMinY = Math.max(0.08, middleY - 0.42);
-    const highestMaxY = middleY - 0.28;
-    const highestY = rand(highestMinY, highestMaxY);
+    /**
+     * yFractions are within the bands the client requested:
+     *   lowest 0.65-0.70, middle 0.45-0.50, highest 0.25-0.30.
+     * Min gap between bands is 0.15, matching the no-overlap rule.
+     */
+    const lowestY = rand(0.65, 0.7);
+    const middleY = rand(0.45, 0.5);
+    const highestY = rand(0.25, 0.3);
 
     const thirds = shuffle<[number, number]>([
       [0.15, 0.32],
@@ -351,6 +368,16 @@ export class ArenaScene extends Phaser.Scene {
 
     this.scale.on('resize', this.handleResize, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.cleanup, this);
+
+    /** Seed the host with the initial pause-allowed value for this scene instance. */
+    this.notifyPauseAllowed();
+  }
+
+  private notifyPauseAllowed(): void {
+    const allowed = !this.matchOver && !this.inInterRound;
+    if (allowed === this.lastPauseAllowed) return;
+    this.lastPauseAllowed = allowed;
+    this.onPauseAllowedChange?.(allowed);
   }
 
   update(): void {
@@ -1104,6 +1131,7 @@ export class ArenaScene extends Phaser.Scene {
   private startInterRound(): void {
     if (this.matchOver) return;
     this.inInterRound = true;
+    this.notifyPauseAllowed();
     this.playerBullets.clear(true, true);
     this.enemyBullets.clear(true, true);
     this.playerHealth = MAX_HEALTH;
@@ -1118,6 +1146,7 @@ export class ArenaScene extends Phaser.Scene {
     this.time.delayedCall(INTER_ROUND_MS, () => {
       this.inInterRound = false;
       this.hideInterRoundOverlay();
+      this.notifyPauseAllowed();
     });
   }
 
@@ -1430,6 +1459,7 @@ export class ArenaScene extends Phaser.Scene {
     if (this.matchOver) return;
     this.matchOver = true;
     this.inInterRound = false;
+    this.notifyPauseAllowed();
     if (this.interRoundGroup) {
       this.interRoundGroup.destroy();
       this.interRoundGroup = undefined;
