@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 
 import { useGameRealtime } from '../contexts/GameRealtimeContext';
 import { getAppOrigin } from '../lib/env';
@@ -47,7 +47,7 @@ function CountdownOverlay({ endsAt }: { endsAt: number | null }) {
 export function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
 
-  const { playerId, roomState, socketStatus, protocolError, toggleReady, exitToLobby, disconnectSocket } =
+  const { playerId, roomState, socketStatus, protocolError, toggleReady, exitToLobby } =
     useGameRealtime();
 
   const inviteUrl = useMemo(() => {
@@ -108,11 +108,6 @@ export function RoomPage() {
         <div className="relative">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-300/90">Matchmaking</p>
           <h1 className="mt-2 font-mono text-xl font-bold tracking-tight text-white sm:text-2xl">{roomId ?? '—'}</h1>
-          <p className="mt-3 max-w-xl text-sm leading-relaxed text-slate-400">
-            The host badge is for the first seat only (cosmetic). If someone leaves, the table stays open with one
-            seat free so others can join from the lobby. When both are ready, a short countdown runs and the match id is
-            issued.
-          </p>
           {roomState ? (
             <p className="mt-2 text-xs text-slate-500">
               Stake{' '}
@@ -235,13 +230,6 @@ export function RoomPage() {
         >
           {inCountdown ? 'Countdown running…' : phaseCopy}
         </span>
-        <Link
-          to={`/match/dev-${encodeURIComponent(roomId ?? 'unknown')}`}
-          className="cursor-pointer rounded-xl border border-dashed border-slate-600 px-4 py-2.5 text-sm text-slate-400 hover:bg-slate-800"
-          onClick={() => disconnectSocket()}
-        >
-          Skip (dev)
-        </Link>
       </div>
     </div>
   );

@@ -7,6 +7,7 @@ import { ArenaScene, type ArenaSceneInitData } from './scenes/ArenaScene';
 
 type PhaserGameProps = {
   isDemo: boolean;
+  matchId: string;
   selfPlayerId: string;
   opponentPlayerId: string;
   selfSeat: number;
@@ -14,6 +15,7 @@ type PhaserGameProps = {
   platforms?: PlatformSpec[];
   sendGameMessage: (payload: Record<string, unknown>) => void;
   subscribeGameMessages: (handler: (msg: GameMessage) => void) => () => void;
+  exitToLobby: () => void;
 };
 
 export function PhaserGame(props: PhaserGameProps) {
@@ -55,6 +57,7 @@ export function PhaserGame(props: PhaserGameProps) {
 
     const init: ArenaSceneInitData = {
       isDemo: propsRef.current.isDemo,
+      matchId: propsRef.current.matchId,
       selfPlayerId: propsRef.current.selfPlayerId,
       opponentPlayerId: propsRef.current.opponentPlayerId,
       selfSeat: propsRef.current.selfSeat,
@@ -62,6 +65,7 @@ export function PhaserGame(props: PhaserGameProps) {
       platforms: propsRef.current.platforms,
       sendGameMessage: (payload) => propsRef.current.sendGameMessage(payload),
       subscribeGameMessages: (handler) => propsRef.current.subscribeGameMessages(handler),
+      exitToLobby: () => propsRef.current.exitToLobby(),
     };
     game.scene.add('ArenaScene', ArenaScene, true, init);
 

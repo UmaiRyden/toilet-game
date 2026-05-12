@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useLocation, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 
 import { useGameRealtime } from '../contexts/GameRealtimeContext';
 import { useMatchSession } from '../hooks/useMatchSession';
@@ -7,8 +7,6 @@ import { PhaserGame } from '../game/PhaserGame';
 
 export function MatchPage() {
   const { matchId } = useParams<{ matchId: string }>();
-  const location = useLocation();
-  const roomId = (location.state as { roomId?: string } | undefined)?.roomId;
 
   const {
     sendForfeit,
@@ -17,8 +15,10 @@ export function MatchPage() {
     sendGameMessage,
     subscribeGameMessages,
     matchPlatforms,
+    exitToLobby,
   } = useGameRealtime();
-  const verifyState = useMatchSession(matchId);
+  /** Hook still runs so the session-failure side effects fire; UI is hidden. */
+  useMatchSession(matchId);
 
   const [forfeitOpen, setForfeitOpen] = useState(false);
 
@@ -37,36 +37,48 @@ export function MatchPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-5">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-4">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 pb-3">
         {canUseCasualNav ? (
           <>
             <Link
               to="/lobby"
-              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/10"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-white/20 hover:text-white"
             >
-              ← Lobby
+              <span aria-hidden>←</span> Lobby
             </Link>
-            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-sky-400/90">Match</span>
-            <Link
-              to="/"
-              className="rounded-xl px-3 py-2 text-xs font-medium text-slate-500 hover:text-white"
-            >
-              Menu
+            <Link to="/" className="flex items-center gap-2">
+              <span className="text-lg" aria-hidden>
+                🚽
+              </span>
+              <span className="text-sm font-black tracking-tight text-white">
+                TOILET<span className="text-emerald-400">WIF</span>HAT
+              </span>
             </Link>
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/15 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-sky-300 ring-1 ring-sky-500/30">
+              {isDemo ? 'Demo' : 'Dev'}
+            </span>
           </>
         ) : (
           <>
+            <Link to="/" className="flex items-center gap-2">
+              <span className="text-lg" aria-hidden>
+                🚽
+              </span>
+              <span className="text-sm font-black tracking-tight text-white">
+                TOILET<span className="text-emerald-400">WIF</span>HAT
+              </span>
+            </Link>
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-300 ring-1 ring-emerald-500/30">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+              Live match
+            </span>
             <button
               type="button"
               onClick={() => setForfeitOpen(true)}
-              className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-200 hover:bg-red-500/20"
+              className="text-xs font-medium text-slate-500 transition hover:text-red-400"
             >
-              Resign match
+              Resign
             </button>
-            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-sky-400/90">Match</span>
-            <span className="max-w-[140px] text-right text-[10px] leading-tight text-slate-500">
-              Lobby & menu locked — resign to leave with a loss.
-            </span>
           </>
         )}
       </header>
@@ -109,44 +121,10 @@ export function MatchPage() {
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-2xl font-bold text-white">
-          {isDemo ? 'Demo match' : isDevSkip ? 'Dev skip' : 'Match'}
-        </h1>
-        <span className="rounded-full bg-slate-800 px-3 py-1 text-xs font-medium text-slate-300">
-          Game placeholder
-        </span>
-      </div>
-      <p className="font-mono text-sm text-slate-500">match id: {matchId ?? '—'}</p>
-      {roomId ? (
-        <p className="text-xs text-slate-500">
-          Table / room <span className="font-mono text-slate-400">{roomId}</span> stays open after resign — winner keeps
-          the seat.
-        </p>
-      ) : null}
-
-      {!isDemo && !isDevSkip ? (
-        <p className="text-xs text-slate-400">
-          Session check:{' '}
-          {verifyState === 'checking' ? (
-            <span className="text-amber-400">…</span>
-          ) : verifyState === 'verified' ? (
-            <span className="text-emerald-400">ok</span>
-          ) : verifyState === 'failed' ? (
-            <span className="text-red-400">failed</span>
-          ) : (
-            <span className="text-slate-500">skipped</span>
-          )}
-        </p>
-      ) : null}
-
-      <p className="text-sm text-slate-400">
-        Stakes are locked for this match. Use <strong className="text-slate-300">Resign match</strong> if you must leave;
-        random navigation is blocked until the match resolves.
-      </p>
       <div className="flex min-h-[600px] flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950">
         <PhaserGame
           isDemo={!isLiveMatch}
+          matchId={matchId ?? ''}
           selfPlayerId={playerId ?? ''}
           opponentPlayerId={opponentPlayer?.playerId ?? ''}
           selfSeat={selfSeat}
@@ -154,6 +132,7 @@ export function MatchPage() {
           platforms={matchPlatforms ?? undefined}
           sendGameMessage={sendGameMessage}
           subscribeGameMessages={subscribeGameMessages}
+          exitToLobby={exitToLobby}
         />
       </div>
     </div>

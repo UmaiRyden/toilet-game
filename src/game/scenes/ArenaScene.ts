@@ -2,17 +2,38 @@ import Phaser from 'phaser';
 
 import type { PlatformSpec } from '../../types/realtime';
 
-const SKY_TOP = 0x070b1a;
-const SKY_BOTTOM = 0x1e2a55;
-const HORIZON_GLOW = 0x312e81;
-
-const GROUND_FILL = 0x111827;
-const GROUND_EDGE = 0x475569;
-const GROUND_BRICK = 0x1f2937;
 const GROUND_HEIGHT = 56;
 
-const PLATFORM_FILL = 0x1e293b;
-const PLATFORM_EDGE = 0x64748b;
+const SOLDIER_KEY = 'soldier';
+const SOLDIER_URL = '/assets/characters/soldier.png';
+
+/** Known background list — see public/assets/backgrounds. Each scene start picks one at random. */
+const BACKGROUND_KEYS: readonly string[] = [
+  'photo_2026-04-28_15-07-51',
+  'photo_2026-04-28_15-07-53',
+  'photo_2026-04-28_15-07-55',
+  'photo_2026-04-28_15-07-57',
+  'photo_2026-04-28_15-08-01',
+  'photo_2026-04-28_15-08-04',
+  'photo_2026-04-28_15-08-06',
+  'photo_2026-04-28_15-08-11',
+  'photo_2026-04-28_15-08-13',
+  'photo_2026-04-28_15-08-16',
+  'photo_2026-04-28_15-08-18',
+  'photo_2026-04-28_15-08-21',
+  'photo_2026-04-28_15-08-23',
+  'photo_2026-04-28_15-08-26',
+  'photo_2026-04-28_15-08-31',
+  'photo_2026-04-28_15-08-34',
+  'photo_2026-04-28_15-08-37',
+  'photo_2026-04-28_15-08-39',
+  'photo_2026-04-28_15-08-41',
+  'photo_2026-04-28_15-08-43',
+  'photo_2026-04-28_15-08-45',
+  'photo_2026-04-28_15-08-49',
+  'photo_2026-04-28_15-08-51',
+  'photo_2026-04-28_15-08-54',
+];
 
 const PLAYER_WIDTH = 32;
 const PLAYER_HEIGHT = 48;
@@ -38,6 +59,17 @@ const HIT_FLASH_MS = 110;
 
 const GAME_UPDATE_INTERVAL_MS = 50;
 const ENEMY_LERP = 0.25;
+
+const ROUNDS_TO_WIN_MATCH = 2;
+const INTER_ROUND_MS = 2000;
+
+const AI_SPEED = 220;
+const AI_SHOOT_RANGE = 320;
+const AI_TOO_CLOSE = 140;
+const AI_SHOT_INTERVAL_MIN_MS = 900;
+const AI_SHOT_INTERVAL_MAX_MS = 1900;
+const AI_AIM_NOISE_X = 70;
+const AI_AIM_NOISE_Y = 50;
 
 type CursorKeys = Phaser.Types.Input.Keyboard.CursorKeys;
 type Key = Phaser.Input.Keyboard.Key;
@@ -79,6 +111,7 @@ const ORANGE_PALETTE: Palette = {
 
 export interface ArenaSceneInitData {
   isDemo: boolean;
+  matchId: string;
   selfPlayerId: string;
   opponentPlayerId: string;
   selfSeat: number;
@@ -86,6 +119,7 @@ export interface ArenaSceneInitData {
   platforms?: PlatformSpec[];
   sendGameMessage: (payload: Record<string, unknown>) => void;
   subscribeGameMessages: (handler: (msg: GameMessage) => void) => () => void;
+  exitToLobby: () => void;
 }
 
 export class ArenaScene extends Phaser.Scene {
@@ -98,15 +132,16 @@ export class ArenaScene extends Phaser.Scene {
   private enemyBullets!: Phaser.Physics.Arcade.Group;
 
   /** Visual layers (drawn from low to high depth). */
-  private skyLayer!: Phaser.GameObjects.Graphics;
-  private parallaxLayer!: Phaser.GameObjects.Graphics;
-  private groundLayer!: Phaser.GameObjects.Graphics;
+  private backgroundImage?: Phaser.GameObjects.Image;
   private platformLayer!: Phaser.GameObjects.Graphics;
   private decorations!: Phaser.GameObjects.Graphics;
+  private playerSprite!: Phaser.GameObjects.Sprite;
+  private enemySprite!: Phaser.GameObjects.Sprite;
   private bulletFx!: Phaser.GameObjects.Graphics;
   private healthBars!: Phaser.GameObjects.Graphics;
   private crosshair!: Phaser.GameObjects.Graphics;
   private ammoIcon!: Phaser.GameObjects.Graphics;
+  private selectedBackgroundKey = '';
 
   /** HUD text objects. */
   private ammoText!: Phaser.GameObjects.Text;
@@ -115,6 +150,7 @@ export class ArenaScene extends Phaser.Scene {
   private bannerText!: Phaser.GameObjects.Text;
   private selfNameText!: Phaser.GameObjects.Text;
   private enemyNameText!: Phaser.GameObjects.Text;
+  private roundScoreText!: Phaser.GameObjects.Text;
 
   /** Controls. */
   private cursors!: CursorKeys;
@@ -123,22 +159,44 @@ export class ArenaScene extends Phaser.Scene {
   private keyW!: Key;
   private keySpace!: Key;
 
-  /** Game state (unchanged from previous iteration). */
+  /** Game state. */
   private ammo = MAG_SIZE;
   private reloading = false;
   private playerHealth = MAX_HEALTH;
   private enemyHealth = MAX_HEALTH;
   private matchOver = false;
+  private inInterRound = false;
+  private interRoundGroup?: Phaser.GameObjects.Container;
   private resultGroup?: Phaser.GameObjects.Container;
+  private resultActionContainer?: Phaser.GameObjects.Container;
+
+  /** Round bookkeeping (best of 3). */
+  private roundsWonSelf = 0;
+  private roundsWonEnemy = 0;
+  private roundNumber = 1;
+
+  /** Rematch UI state (only meaningful after match end in live mode). */
+  private weAcceptedRematch = false;
+  private opponentAcceptedRematch = false;
+
+  /** Demo AI state. */
+  private aiAmmo = MAG_SIZE;
+  private aiReloading = false;
+  private aiReloadUntil = 0;
+  private aiNextShotAt = 0;
+  private aiNextJumpAt = 0;
+  private aiJumpsUsed = 0;
 
   /** Multiplayer wiring. */
   private isDemo = true;
+  private matchId = '';
   private selfPlayerId = '';
   private opponentPlayerId = '';
   private selfSeat = 0;
   private stakeSol?: number;
   private sendGameMessage?: (payload: Record<string, unknown>) => void;
   private subscribeGameMessages?: (handler: (msg: GameMessage) => void) => () => void;
+  private exitToLobbyCallback?: () => void;
   private unsubscribeGame?: () => void;
   private lastUpdateSentAt = 0;
   private enemyTarget: { x: number; y: number } | null = null;
@@ -161,12 +219,14 @@ export class ArenaScene extends Phaser.Scene {
 
   init(data: Partial<ArenaSceneInitData> | undefined): void {
     this.isDemo = data?.isDemo ?? true;
+    this.matchId = data?.matchId ?? '';
     this.selfPlayerId = data?.selfPlayerId ?? '';
     this.opponentPlayerId = data?.opponentPlayerId ?? '';
     this.selfSeat = data?.selfSeat ?? 0;
     this.stakeSol = data?.stakeSol;
     this.sendGameMessage = data?.sendGameMessage;
     this.subscribeGameMessages = data?.subscribeGameMessages;
+    this.exitToLobbyCallback = data?.exitToLobby;
 
     /** Seat 0 wears cyan, seat 1 wears orange — both clients agree on team colors. */
     this.playerPalette = this.selfSeat === 0 ? CYAN_PALETTE : ORANGE_PALETTE;
@@ -177,7 +237,10 @@ export class ArenaScene extends Phaser.Scene {
     this.playerHealth = MAX_HEALTH;
     this.enemyHealth = MAX_HEALTH;
     this.matchOver = false;
+    this.inInterRound = false;
+    this.interRoundGroup = undefined;
     this.resultGroup = undefined;
+    this.resultActionContainer = undefined;
     this.lastUpdateSentAt = 0;
     this.enemyTarget = null;
     this.pendingShot = null;
@@ -186,6 +249,21 @@ export class ArenaScene extends Phaser.Scene {
     this.shotsFired = 0;
     this.shotsHit = 0;
     this.jumpsUsed = 0;
+    this.roundsWonSelf = 0;
+    this.roundsWonEnemy = 0;
+    this.roundNumber = 1;
+    this.weAcceptedRematch = false;
+    this.opponentAcceptedRematch = false;
+    this.aiAmmo = MAG_SIZE;
+    this.aiReloading = false;
+    this.aiReloadUntil = 0;
+    this.aiNextShotAt = 0;
+    this.aiNextJumpAt = 0;
+    this.aiJumpsUsed = 0;
+
+    /** Each scene start (incl. demo Play Again) rolls a new background. */
+    this.selectedBackgroundKey =
+      BACKGROUND_KEYS[Math.floor(Math.random() * BACKGROUND_KEYS.length)] ?? '';
 
     /**
      * Live matches use the server-shared layout so both clients see the same arena.
@@ -199,6 +277,19 @@ export class ArenaScene extends Phaser.Scene {
       }));
     } else {
       this.platformSpecs = this.generateRandomLayout();
+    }
+  }
+
+  preload(): void {
+    /** Soldier avatar — Phaser de-dupes loads by key, so scene.restart is a no-op here. */
+    if (!this.textures.exists(SOLDIER_KEY)) {
+      this.load.image(SOLDIER_KEY, SOLDIER_URL);
+    }
+    if (this.selectedBackgroundKey && !this.textures.exists(this.selectedBackgroundKey)) {
+      this.load.image(
+        this.selectedBackgroundKey,
+        `/assets/backgrounds/${this.selectedBackgroundKey}.jpg`,
+      );
     }
   }
 
@@ -234,11 +325,10 @@ export class ArenaScene extends Phaser.Scene {
 
   create(): void {
     const { width, height } = this.scale.gameSize;
-    this.cameras.main.setBackgroundColor(SKY_TOP);
+    this.cameras.main.setBackgroundColor(0x000000);
     this.physics.world.setBounds(0, 0, width, height);
 
-    this.createSky(width, height);
-    this.createParallax(width, height);
+    this.createBackground(width, height);
     this.createGround(width, height);
     this.createPlatforms(width, height);
 
@@ -249,6 +339,7 @@ export class ArenaScene extends Phaser.Scene {
 
     this.createPlayer(width, height);
     this.createEnemy(width, height);
+    this.createCharacterSprites();
     this.createBullets();
     this.createHud(width);
     this.setupInput();
@@ -265,12 +356,14 @@ export class ArenaScene extends Phaser.Scene {
   update(): void {
     this.updateMovement();
     this.updateShooting();
+    this.updateAI();
     this.lerpEnemy();
     this.drawDecorations();
+    this.updateSprites();
     this.drawBulletFx();
     this.drawHealthBars();
     this.updateLabelPositions();
-    if (this.matchOver) {
+    if (this.matchOver || this.inInterRound) {
       this.crosshair.clear();
     } else {
       const pointer = this.input.activePointer;
@@ -282,100 +375,32 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   /* ------------------------------------------------------------------ */
-  /* Background                                                          */
+  /* Background + ground                                                  */
   /* ------------------------------------------------------------------ */
 
-  private createSky(width: number, height: number): void {
-    this.skyLayer = this.add.graphics().setDepth(-30);
-    this.drawSky(width, height);
+  private createBackground(width: number, height: number): void {
+    if (!this.selectedBackgroundKey || !this.textures.exists(this.selectedBackgroundKey)) return;
+    this.backgroundImage = this.add.image(width / 2, height / 2, this.selectedBackgroundKey);
+    this.backgroundImage.setDepth(-100);
+    this.fitBackground(width, height);
   }
 
-  private drawSky(width: number, height: number): void {
-    this.skyLayer.clear();
-    this.skyLayer.fillGradientStyle(SKY_TOP, SKY_TOP, SKY_BOTTOM, SKY_BOTTOM, 1, 1, 1, 1);
-    this.skyLayer.fillRect(0, 0, width, height);
-    this.skyLayer.fillGradientStyle(SKY_BOTTOM, SKY_BOTTOM, HORIZON_GLOW, HORIZON_GLOW, 0.0, 0.0, 0.45, 0.45);
-    this.skyLayer.fillRect(0, height - GROUND_HEIGHT - 180, width, 180);
-  }
-
-  private createParallax(width: number, height: number): void {
-    this.parallaxLayer = this.add.graphics().setDepth(-20);
-    this.drawParallax(width, height);
-  }
-
-  private drawParallax(width: number, height: number): void {
-    this.parallaxLayer.clear();
-    const horizon = height - GROUND_HEIGHT;
-
-    /** Far skyline (dim). */
-    this.parallaxLayer.fillStyle(0x0c1226, 0.85);
-    const farCount = Math.max(8, Math.round(width / 80));
-    let cursor = 0;
-    for (let i = 0; i < farCount; i++) {
-      const bw = 70 + ((i * 37) % 60);
-      const bh = 40 + ((i * 19) % 90);
-      this.parallaxLayer.fillRect(cursor, horizon - bh, bw, bh);
-      cursor += bw + 10;
-      if (cursor > width) break;
-    }
-
-    /** Near skyline (slightly brighter, lower opacity). */
-    this.parallaxLayer.fillStyle(0x111c3a, 0.95);
-    const nearCount = Math.max(6, Math.round(width / 110));
-    cursor = -20;
-    for (let i = 0; i < nearCount; i++) {
-      const bw = 90 + ((i * 53) % 70);
-      const bh = 70 + ((i * 31) % 120);
-      this.parallaxLayer.fillRect(cursor, horizon - bh, bw, bh);
-      /** A few lit windows for atmosphere. */
-      this.parallaxLayer.fillStyle(0x312e81, 0.65);
-      for (let wy = horizon - bh + 12; wy < horizon - 8; wy += 14) {
-        for (let wx = cursor + 6; wx < cursor + bw - 6; wx += 10) {
-          if ((wx * wy) % 7 === 0) this.parallaxLayer.fillRect(wx, wy, 3, 4);
-        }
-      }
-      this.parallaxLayer.fillStyle(0x111c3a, 0.95);
-      cursor += bw + 14;
-      if (cursor > width) break;
-    }
+  private fitBackground(width: number, height: number): void {
+    if (!this.backgroundImage) return;
+    this.backgroundImage.setPosition(width / 2, height / 2);
+    const srcW = this.backgroundImage.width;
+    const srcH = this.backgroundImage.height;
+    if (srcW <= 0 || srcH <= 0) return;
+    /** Cover mode: scale to the larger ratio so the canvas is fully covered (edges may crop). */
+    const scale = Math.max(width / srcW, height / srcH);
+    this.backgroundImage.setScale(scale);
   }
 
   private createGround(width: number, height: number): void {
     const groundY = height - GROUND_HEIGHT / 2;
-    /** Invisible rectangle that owns the static physics body. */
+    /** Invisible rectangle — the background image visualizes the ground. */
     this.ground = this.add.rectangle(width / 2, groundY, width, GROUND_HEIGHT, 0x000000, 0);
     this.physics.add.existing(this.ground, true);
-
-    this.groundLayer = this.add.graphics().setDepth(-10);
-    this.drawGround(width, height);
-  }
-
-  private drawGround(width: number, height: number): void {
-    this.groundLayer.clear();
-    const top = height - GROUND_HEIGHT;
-
-    /** Base fill. */
-    this.groundLayer.fillStyle(GROUND_FILL, 1);
-    this.groundLayer.fillRect(0, top, width, GROUND_HEIGHT);
-
-    /** Top highlight strip. */
-    this.groundLayer.fillStyle(GROUND_EDGE, 1);
-    this.groundLayer.fillRect(0, top, width, 2);
-    this.groundLayer.fillStyle(0x1f2937, 0.8);
-    this.groundLayer.fillRect(0, top + 2, width, 1);
-
-    /** Brick pattern. */
-    this.groundLayer.lineStyle(1, GROUND_BRICK, 0.85);
-    const brickW = 56;
-    const brickH = 14;
-    for (let row = 0; row < Math.ceil(GROUND_HEIGHT / brickH); row++) {
-      const y = top + 6 + row * brickH;
-      this.groundLayer.lineBetween(0, y, width, y);
-      const offset = row % 2 === 0 ? 0 : brickW / 2;
-      for (let x = offset; x < width; x += brickW) {
-        this.groundLayer.lineBetween(x, y, x, y + brickH);
-      }
-    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -413,18 +438,20 @@ export class ArenaScene extends Phaser.Scene {
     for (const plat of children) {
       const x = plat.x - plat.width / 2;
       const y = plat.y - plat.height / 2;
-      /** Shadow base. */
-      this.platformLayer.fillStyle(0x000000, 0.35);
-      this.platformLayer.fillRoundedRect(x + 3, y + 5, plat.width, plat.height, 4);
-      /** Body. */
-      this.platformLayer.fillStyle(PLATFORM_FILL, 1);
-      this.platformLayer.fillRoundedRect(x, y, plat.width, plat.height, 4);
-      /** Top highlight. */
-      this.platformLayer.fillStyle(PLATFORM_EDGE, 1);
+      /** Soft outer glow so the platform stays legible against busy photo backgrounds. */
+      this.platformLayer.fillStyle(0xffffff, 0.1);
+      this.platformLayer.fillRoundedRect(x - 6, y - 5, plat.width + 12, plat.height + 10, 8);
+      this.platformLayer.fillStyle(0xffffff, 0.16);
+      this.platformLayer.fillRoundedRect(x - 3, y - 3, plat.width + 6, plat.height + 6, 6);
+      /** Body — dark slate, fully opaque. */
+      this.platformLayer.fillStyle(0x0f172a, 0.95);
+      this.platformLayer.fillRoundedRect(x, y, plat.width, plat.height, 5);
+      /** Bright top edge. */
+      this.platformLayer.fillStyle(0xffffff, 0.85);
       this.platformLayer.fillRoundedRect(x, y, plat.width, 2, 1);
-      /** Outline. */
-      this.platformLayer.lineStyle(1, 0x0f172a, 1);
-      this.platformLayer.strokeRoundedRect(x, y, plat.width, plat.height, 4);
+      /** Crisp white outline. */
+      this.platformLayer.lineStyle(1.5, 0xffffff, 0.75);
+      this.platformLayer.strokeRoundedRect(x, y, plat.width, plat.height, 5);
     }
   }
 
@@ -455,85 +482,79 @@ export class ArenaScene extends Phaser.Scene {
     this.enemy = this.add.rectangle(startX, startY, PLAYER_WIDTH, PLAYER_HEIGHT, 0x000000, 0);
     this.physics.add.existing(this.enemy);
     const body = this.enemy.body as Phaser.Physics.Arcade.Body;
-    body.setAllowGravity(false);
-    body.setImmovable(true);
+    if (this.isDemo) {
+      /** AI-controlled — needs gravity + collisions, must not be immovable. */
+      body.setCollideWorldBounds(true);
+      body.setMaxVelocity(AI_SPEED * 1.5, 1200);
+    } else {
+      /** Live mode: position is driven by lerpEnemy from opponent's game_update. */
+      body.setAllowGravity(false);
+      body.setImmovable(true);
+    }
+  }
+
+  private createCharacterSprites(): void {
+    /**
+     * Soldier avatar serves both players; team identity comes from the multiply-tint.
+     * setDisplaySize fits the sprite to the existing 32×48 hitbox; the rect underneath
+     * stays alpha-0 and owns the arcade body, so collisions are unchanged.
+     */
+    this.playerSprite = this.add.sprite(this.player.x, this.player.y, SOLDIER_KEY);
+    this.playerSprite.setDisplaySize(PLAYER_WIDTH, PLAYER_HEIGHT);
+    this.playerSprite.setTint(this.playerPalette.body);
+    this.playerSprite.setDepth(6);
+
+    this.enemySprite = this.add.sprite(this.enemy.x, this.enemy.y, SOLDIER_KEY);
+    this.enemySprite.setDisplaySize(PLAYER_WIDTH, PLAYER_HEIGHT);
+    this.enemySprite.setTint(this.enemyPalette.body);
+    this.enemySprite.setDepth(6);
   }
 
   private drawDecorations(): void {
     this.decorations.clear();
-
-    const pointer = this.input.activePointer;
-    const playerAim = this.matchOver
-      ? { x: this.enemy.x, y: this.enemy.y }
-      : { x: pointer.worldX, y: pointer.worldY };
-    const enemyAim = { x: this.player.x, y: this.player.y };
-
-    this.drawCharacter(this.player.x, this.player.y, this.playerPalette, playerAim, this.playerFlashUntil);
-    this.drawCharacter(this.enemy.x, this.enemy.y, this.enemyPalette, enemyAim, this.enemyFlashUntil);
+    /** Thin elliptical shadow under each character — sprite renders above on depth 6. */
+    this.drawCharacterShadow(this.player.x, this.player.y);
+    this.drawCharacterShadow(this.enemy.x, this.enemy.y);
   }
 
-  private drawCharacter(
-    cx: number,
-    cy: number,
-    palette: Palette,
-    aim: { x: number; y: number },
-    flashUntil: number,
+  private drawCharacterShadow(cx: number, cy: number): void {
+    this.decorations.fillStyle(0x000000, 0.5);
+    this.decorations.fillEllipse(cx, cy + PLAYER_HEIGHT / 2 - 2, 38, 9);
+  }
+
+  private updateSprites(): void {
+    const now = this.time.now;
+
+    if (this.playerSprite) {
+      this.playerSprite.setPosition(this.player.x, this.player.y);
+      const pointer = this.input.activePointer;
+      /** Player faces the cursor while alive; once the round ends, freeze the facing toward the enemy. */
+      const aimX =
+        this.matchOver || this.inInterRound ? this.enemy.x : pointer.worldX;
+      this.playerSprite.setFlipX(aimX < this.player.x);
+      this.applySpriteTint(this.playerSprite, this.playerPalette.body, now < this.playerFlashUntil);
+    }
+
+    if (this.enemySprite) {
+      this.enemySprite.setPosition(this.enemy.x, this.enemy.y);
+      /** Enemy always tracks the player visually (live + demo). */
+      this.enemySprite.setFlipX(this.player.x < this.enemy.x);
+      this.applySpriteTint(this.enemySprite, this.enemyPalette.body, now < this.enemyFlashUntil);
+    }
+  }
+
+  /**
+   * Apply a multiply-mode team tint, or a solid-white "fill" tint when flashing.
+   * The bundled Phaser typings declare setTintFill()/tintFill incompletely, hence the
+   * narrow cast — the runtime API matches the official Phaser 3 docs.
+   */
+  private applySpriteTint(
+    sprite: Phaser.GameObjects.Sprite,
+    teamColor: number,
+    flashing: boolean,
   ): void {
-    const flashing = this.time.now < flashUntil;
-    const bodyColor = flashing ? 0xffffff : palette.body;
-    const headColor = flashing ? 0xffffff : palette.head;
-    const trimColor = palette.trim;
-    const g = this.decorations;
-
-    /** Drop shadow at the player's feet. */
-    g.fillStyle(0x000000, 0.45);
-    g.fillEllipse(cx, cy + PLAYER_HEIGHT / 2 - 1, 38, 9);
-
-    /** Legs — two small rounded rects. */
-    g.fillStyle(palette.bodyDark, 1);
-    g.fillRoundedRect(cx - 9, cy + 6, 7, 16, 2);
-    g.fillRoundedRect(cx + 2, cy + 6, 7, 16, 2);
-
-    /** Torso. */
-    g.fillStyle(bodyColor, 1);
-    g.fillRoundedRect(cx - 12, cy - 14, 24, 24, 6);
-    g.lineStyle(2, trimColor, 1);
-    g.strokeRoundedRect(cx - 12, cy - 14, 24, 24, 6);
-
-    /** Chest strap (thin diagonal accent). */
-    g.lineStyle(2, palette.bodyDark, 0.9);
-    g.lineBetween(cx - 8, cy - 8, cx + 8, cy + 2);
-
-    /** Head. */
-    g.fillStyle(headColor, 1);
-    g.fillCircle(cx, cy - 20, 8);
-    g.lineStyle(2, trimColor, 1);
-    g.strokeCircle(cx, cy - 20, 8);
-
-    /** Visor — small dark band across head. */
-    g.fillStyle(0x0f172a, 0.85);
-    g.fillRoundedRect(cx - 7, cy - 22, 14, 4, 1);
-
-    /** Gun arm extending in aim direction. */
-    const dx = aim.x - cx;
-    const dy = aim.y - cy;
-    const len = Math.hypot(dx, dy) || 1;
-    const nx = dx / len;
-    const ny = dy / len;
-    const shoulderX = cx + nx * 4;
-    const shoulderY = cy - 6 + ny * 2;
-    const tipX = cx + nx * 22;
-    const tipY = cy - 4 + ny * 22;
-
-    /** Arm. */
-    g.lineStyle(6, palette.bodyDark, 1);
-    g.lineBetween(shoulderX, shoulderY, tipX, tipY);
-    /** Gun barrel. */
-    g.lineStyle(4, palette.gun, 1);
-    g.lineBetween(shoulderX + nx * 6, shoulderY + ny * 6, tipX + nx * 4, tipY + ny * 4);
-    /** Muzzle tip highlight. */
-    g.fillStyle(palette.gun, 1);
-    g.fillCircle(tipX + nx * 4, tipY + ny * 4, 2.5);
+    sprite.setTint(flashing ? 0xffffff : teamColor);
+    (sprite as unknown as { tintFill: boolean }).tintFill = flashing;
   }
 
   /* ------------------------------------------------------------------ */
@@ -687,6 +708,8 @@ export class ArenaScene extends Phaser.Scene {
   private setupInput(): void {
     const keyboard = this.input.keyboard;
     if (keyboard) {
+      /** A previous showResult may have disabled this. */
+      keyboard.enabled = true;
       this.cursors = keyboard.createCursorKeys();
       this.keyA = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A);
       this.keyD = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D);
@@ -715,7 +738,7 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private updateShooting(): void {
-    if (this.matchOver) {
+    if (this.matchOver || this.inInterRound) {
       this.pendingShot = null;
       return;
     }
@@ -727,7 +750,7 @@ export class ArenaScene extends Phaser.Scene {
 
   private updateMovement(): void {
     const body = this.player.body as Phaser.Physics.Arcade.Body;
-    if (this.matchOver) {
+    if (this.matchOver || this.inInterRound) {
       body.setVelocityX(0);
       return;
     }
@@ -767,6 +790,71 @@ export class ArenaScene extends Phaser.Scene {
     this.updateAmmoText();
   }
 
+  private updateAI(): void {
+    if (!this.isDemo || this.matchOver || this.inInterRound) return;
+    const body = this.enemy.body as Phaser.Physics.Arcade.Body | null;
+    if (!body) return;
+
+    const now = this.time.now;
+    const dx = this.player.x - this.enemy.x;
+    const distance = Math.abs(dx);
+    const direction = Math.sign(dx) || 1;
+
+    /** Stand-off behaviour: rush in when too far, retreat when too close. */
+    if (distance > AI_SHOOT_RANGE) {
+      body.setVelocityX(direction * AI_SPEED);
+    } else if (distance < AI_TOO_CLOSE) {
+      body.setVelocityX(-direction * AI_SPEED);
+    } else {
+      body.setVelocityX(direction * AI_SPEED * 0.25);
+    }
+
+    /** Jump management — random hops + occasional double jump to mix vertical reads. */
+    const onGround = body.blocked.down || body.touching.down;
+    if (onGround) this.aiJumpsUsed = 0;
+    if (now >= this.aiNextJumpAt && this.aiJumpsUsed < 2) {
+      if (onGround && Math.random() < 0.45) {
+        body.setVelocityY(JUMP_VELOCITY);
+        this.aiJumpsUsed = 1;
+        this.aiNextJumpAt = now + 1100 + Math.random() * 1400;
+      } else if (!onGround && this.aiJumpsUsed === 1 && Math.random() < 0.25) {
+        body.setVelocityY(JUMP_VELOCITY);
+        this.aiJumpsUsed = 2;
+        this.aiNextJumpAt = now + 1100 + Math.random() * 1400;
+      }
+    }
+
+    /** Reload completion. */
+    if (this.aiReloading && now >= this.aiReloadUntil) {
+      this.aiAmmo = MAG_SIZE;
+      this.aiReloading = false;
+    }
+
+    /** Shooting cadence with aim noise — keeps the AI threatening but not perfect. */
+    if (!this.aiReloading && this.aiAmmo > 0 && now >= this.aiNextShotAt) {
+      const aimX = this.player.x + (Math.random() - 0.5) * AI_AIM_NOISE_X;
+      const aimY = this.player.y + (Math.random() - 0.5) * AI_AIM_NOISE_Y;
+      const adx = aimX - this.enemy.x;
+      const ady = aimY - this.enemy.y;
+      const len = Math.hypot(adx, ady) || 1;
+      const nx = adx / len;
+      const ny = ady / len;
+      const bx = this.enemy.x + nx * MUZZLE_OFFSET;
+      const by = this.enemy.y - 4 + ny * MUZZLE_OFFSET;
+
+      this.spawnBullet(this.enemyBullets, bx, by, nx, ny, this.enemyPalette);
+      this.spawnMuzzleFlash(bx, by, this.enemyPalette);
+      this.aiAmmo -= 1;
+      this.aiNextShotAt =
+        now + AI_SHOT_INTERVAL_MIN_MS + Math.random() * (AI_SHOT_INTERVAL_MAX_MS - AI_SHOT_INTERVAL_MIN_MS);
+
+      if (this.aiAmmo <= 0) {
+        this.aiReloading = true;
+        this.aiReloadUntil = now + RELOAD_MS;
+      }
+    }
+  }
+
   private maybeSendGameUpdate(): void {
     if (this.isDemo || this.matchOver || !this.sendGameMessage) return;
     const now = this.time.now;
@@ -797,9 +885,34 @@ export class ArenaScene extends Phaser.Scene {
       case 'game_over':
         this.handleGameOver(msg);
         break;
+      case 'round_ended':
+        this.handleServerRoundEnded(msg);
+        break;
+      case 'rematch_status':
+        this.handleRematchStatus(msg);
+        break;
       default:
         break;
     }
+  }
+
+  private handleServerRoundEnded(msg: GameMessage): void {
+    const scores = (msg.scores as Record<string, number> | undefined) ?? null;
+    if (scores) {
+      this.roundsWonSelf = scores[this.selfPlayerId] ?? this.roundsWonSelf;
+      this.roundsWonEnemy = scores[this.opponentPlayerId] ?? this.roundsWonEnemy;
+    }
+    const next = Number(msg.nextRound);
+    this.roundNumber = Number.isFinite(next) && next > 0 ? next : this.roundNumber + 1;
+    this.startInterRound();
+  }
+
+  private handleRematchStatus(msg: GameMessage): void {
+    if (!this.matchOver) return;
+    const accepted = Array.isArray(msg.acceptedBy) ? (msg.acceptedBy as string[]) : [];
+    this.weAcceptedRematch = accepted.includes(this.selfPlayerId);
+    this.opponentAcceptedRematch = accepted.includes(this.opponentPlayerId);
+    this.renderResultActions();
   }
 
   private handleOpponentUpdate(msg: GameMessage): void {
@@ -855,6 +968,11 @@ export class ArenaScene extends Phaser.Scene {
   private setupColliders(): void {
     this.physics.add.collider(this.player, this.ground);
     this.physics.add.collider(this.player, this.platforms);
+
+    if (this.isDemo) {
+      this.physics.add.collider(this.enemy, this.ground);
+      this.physics.add.collider(this.enemy, this.platforms);
+    }
 
     const bulletGroundHit = (
       a: unknown,
@@ -929,7 +1047,7 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private onEnemyHit(bullet: Phaser.GameObjects.GameObject): void {
-    if (this.matchOver) return;
+    if (this.matchOver || this.inInterRound) return;
     if (bullet === this.enemy || bullet === this.player) return;
     const bx = (bullet as Phaser.GameObjects.Rectangle).x;
     const by = (bullet as Phaser.GameObjects.Rectangle).y;
@@ -940,7 +1058,7 @@ export class ArenaScene extends Phaser.Scene {
       this.shotsHit += 1;
       this.triggerFlash('enemy');
       if (this.enemyHealth <= 0) {
-        this.showResult(true);
+        this.handleRoundEnd(true);
       }
       return;
     }
@@ -950,7 +1068,7 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private onPlayerHit(bullet: Phaser.GameObjects.GameObject): void {
-    if (this.matchOver) return;
+    if (this.matchOver || this.inInterRound) return;
     if (bullet === this.player || bullet === this.enemy) return;
     const bx = (bullet as Phaser.GameObjects.Rectangle).x;
     const by = (bullet as Phaser.GameObjects.Rectangle).y;
@@ -959,8 +1077,119 @@ export class ArenaScene extends Phaser.Scene {
     if (this.isDemo) {
       this.playerHealth = Math.max(0, this.playerHealth - BULLET_DAMAGE);
       this.triggerFlash('self');
+      if (this.playerHealth <= 0) {
+        this.handleRoundEnd(false);
+      }
     }
     /** In live mode, the shooter's client reports the authoritative hit. */
+  }
+
+  /**
+   * Demo-local round resolution. Live mode routes through handleServerRoundEnded
+   * (driven by the server's round_ended broadcast).
+   */
+  private handleRoundEnd(selfWonRound: boolean): void {
+    if (this.matchOver || this.inInterRound) return;
+    if (selfWonRound) this.roundsWonSelf += 1;
+    else this.roundsWonEnemy += 1;
+
+    if (this.roundsWonSelf >= ROUNDS_TO_WIN_MATCH || this.roundsWonEnemy >= ROUNDS_TO_WIN_MATCH) {
+      this.showResult(selfWonRound);
+      return;
+    }
+    this.roundNumber += 1;
+    this.startInterRound();
+  }
+
+  private startInterRound(): void {
+    if (this.matchOver) return;
+    this.inInterRound = true;
+    this.playerBullets.clear(true, true);
+    this.enemyBullets.clear(true, true);
+    this.playerHealth = MAX_HEALTH;
+    this.enemyHealth = MAX_HEALTH;
+    this.ammo = MAG_SIZE;
+    this.reloading = false;
+    this.updateAmmoText();
+    this.updateRoundScoreText();
+    this.resetPlayerPositions();
+    this.showInterRoundOverlay();
+
+    this.time.delayedCall(INTER_ROUND_MS, () => {
+      this.inInterRound = false;
+      this.hideInterRoundOverlay();
+    });
+  }
+
+  private showInterRoundOverlay(): void {
+    if (this.interRoundGroup) {
+      this.interRoundGroup.destroy();
+      this.interRoundGroup = undefined;
+    }
+    const { width, height } = this.scale.gameSize;
+    const backdrop = this.add.rectangle(width / 2, height / 2, width, height, 0x000509, 0.55);
+    const title = this.add
+      .text(width / 2, height / 2, `ROUND ${this.roundNumber}`, {
+        fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+        fontSize: '64px',
+        fontStyle: '900',
+        color: '#fbbf24',
+        stroke: '#7c2d12',
+        strokeThickness: 5,
+        shadow: { offsetX: 0, offsetY: 4, color: '#000000', blur: 10, fill: true },
+      })
+      .setOrigin(0.5);
+    title.setLetterSpacing(6);
+    this.interRoundGroup = this.add.container(0, 0, [backdrop, title]).setDepth(35);
+    this.interRoundGroup.setAlpha(0);
+    this.tweens.add({
+      targets: this.interRoundGroup,
+      alpha: 1,
+      duration: 180,
+      ease: 'Cubic.easeOut',
+    });
+  }
+
+  private hideInterRoundOverlay(): void {
+    if (!this.interRoundGroup) return;
+    const grp = this.interRoundGroup;
+    this.interRoundGroup = undefined;
+    this.tweens.add({
+      targets: grp,
+      alpha: 0,
+      duration: 200,
+      ease: 'Cubic.easeIn',
+      onComplete: () => grp.destroy(),
+    });
+  }
+
+  private resetPlayerPositions(): void {
+    const { width, height } = this.scale.gameSize;
+    const floorY = height - GROUND_HEIGHT - PLAYER_HEIGHT / 2 - 8;
+
+    const selfX =
+      this.selfSeat === 0
+        ? Math.max(80, width * 0.18)
+        : Math.min(width - 80, width * 0.82);
+    this.player.setPosition(selfX, floorY);
+    const pBody = this.player.body as Phaser.Physics.Arcade.Body | null;
+    pBody?.reset(selfX, floorY);
+    this.jumpsUsed = 0;
+
+    if (this.isDemo) {
+      const enemyX =
+        this.selfSeat === 0
+          ? Math.min(width - 80, width * 0.82)
+          : Math.max(80, width * 0.18);
+      this.enemy.setPosition(enemyX, floorY);
+      (this.enemy.body as Phaser.Physics.Arcade.Body | null)?.reset(enemyX, floorY);
+      this.aiAmmo = MAG_SIZE;
+      this.aiReloading = false;
+      this.aiReloadUntil = 0;
+      this.aiNextShotAt = this.time.now + 800;
+      this.aiNextJumpAt = this.time.now + 1500;
+      this.aiJumpsUsed = 0;
+    }
   }
 
   private cullBullets(group: Phaser.Physics.Arcade.Group): void {
@@ -1008,6 +1237,18 @@ export class ArenaScene extends Phaser.Scene {
     this.bannerText.setLetterSpacing(3);
     this.bannerText.setOrigin(0.5);
     this.bannerText.setDepth(15);
+
+    /** Round score (top-left): "self — enemy". */
+    this.roundScoreText = this.add.text(20, 14, '', {
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+      fontSize: '22px',
+      fontStyle: 'bold',
+      color: '#e2e8f0',
+    });
+    this.roundScoreText.setLetterSpacing(4);
+    this.roundScoreText.setOrigin(0, 0);
+    this.roundScoreText.setDepth(15);
+    this.updateRoundScoreText();
 
     /** Ammo readout (icon + count + label). */
     this.ammoIcon = this.add.graphics();
@@ -1086,6 +1327,14 @@ export class ArenaScene extends Phaser.Scene {
     const textLeft = this.ammoText.x - this.ammoText.width;
     const verticalCenter = this.ammoText.y + this.ammoText.height / 2;
     this.ammoIcon.setPosition(textLeft - 28, verticalCenter - 3.5);
+  }
+
+  private updateRoundScoreText(): void {
+    if (!this.roundScoreText) return;
+    /** Self always reads on the left so the player's own progress stays in the same slot. */
+    const tone = this.playerPalette.hexColor;
+    this.roundScoreText.setText(`${this.roundsWonSelf}  —  ${this.roundsWonEnemy}`);
+    this.roundScoreText.setColor(tone);
   }
 
   private bannerLabelText(): string {
@@ -1180,8 +1429,15 @@ export class ArenaScene extends Phaser.Scene {
   private showResult(isVictory: boolean): void {
     if (this.matchOver) return;
     this.matchOver = true;
+    this.inInterRound = false;
+    if (this.interRoundGroup) {
+      this.interRoundGroup.destroy();
+      this.interRoundGroup = undefined;
+    }
     this.input.setDefaultCursor('default');
     this.crosshair.setVisible(false);
+    /** Drop keyboard capture so the prompt buttons receive clicks even with keys held. */
+    if (this.input.keyboard) this.input.keyboard.enabled = false;
     this.playerBullets.clear(true, true);
     this.enemyBullets.clear(true, true);
 
@@ -1193,7 +1449,7 @@ export class ArenaScene extends Phaser.Scene {
     const backdrop = this.add.rectangle(width / 2, height / 2, width, height, 0x000509, 0.82);
 
     const title = this.add
-      .text(width / 2, height / 2 - 90, isVictory ? 'VICTORY' : 'DEFEAT', {
+      .text(width / 2, height / 2 - 110, isVictory ? 'VICTORY' : 'DEFEAT', {
         fontFamily: 'ui-sans-serif, system-ui, sans-serif',
         fontSize: '76px',
         fontStyle: '900',
@@ -1208,8 +1464,8 @@ export class ArenaScene extends Phaser.Scene {
     const subtitle = this.add
       .text(
         width / 2,
-        height / 2 - 36,
-        isVictory ? 'Opponent eliminated.' : 'You were eliminated.',
+        height / 2 - 56,
+        `Final score  ${this.roundsWonSelf} — ${this.roundsWonEnemy}`,
         {
           fontFamily: 'ui-sans-serif, system-ui, sans-serif',
           fontSize: '15px',
@@ -1219,12 +1475,12 @@ export class ArenaScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     const statsBg = this.add
-      .rectangle(width / 2, height / 2 + 36, 320, 96, 0x0f172a, 0.92)
+      .rectangle(width / 2, height / 2 + 10, 320, 96, 0x0f172a, 0.92)
       .setStrokeStyle(1, 0x1e293b);
     const statsText = this.add
       .text(
         width / 2,
-        height / 2 + 36,
+        height / 2 + 10,
         `SHOTS FIRED   ${this.shotsFired}\nACCURACY      ${accuracy}%\nHEALTH         ${remaining} / ${MAX_HEALTH}`,
         {
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
@@ -1236,50 +1492,96 @@ export class ArenaScene extends Phaser.Scene {
       )
       .setOrigin(0.5);
 
-    const children: Phaser.GameObjects.GameObject[] = [
-      backdrop,
-      title,
-      subtitle,
-      statsBg,
-      statsText,
-    ];
+    const actionContainer = this.add.container(width / 2, height / 2 + 110);
 
-    if (this.isDemo) {
-      const button = this.add
-        .text(width / 2, height / 2 + 130, 'Play Again', {
-          fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-          fontSize: '18px',
-          fontStyle: 'bold',
-          color: '#e2e8f0',
-          backgroundColor: '#0e7490',
-          padding: { left: 22, right: 22, top: 10, bottom: 10 },
-        })
-        .setOrigin(0.5)
-        .setInteractive({ useHandCursor: true });
-      button.on('pointerover', () => button.setBackgroundColor('#155e75'));
-      button.on('pointerout', () => button.setBackgroundColor('#0e7490'));
-      button.on('pointerdown', () => this.scene.restart());
-      children.push(button);
-    } else {
-      const note = this.add
-        .text(
-          width / 2,
-          height / 2 + 130,
-          isVictory ? 'Returning to room…' : 'Returning to lobby…',
-          {
-            fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-            fontSize: '13px',
-            color: '#94a3b8',
-          },
-        )
-        .setOrigin(0.5);
-      children.push(note);
-    }
+    this.resultActionContainer = actionContainer;
+    this.resultGroup = this.add
+      .container(0, 0, [backdrop, title, subtitle, statsBg, statsText, actionContainer])
+      .setDepth(30);
 
-    this.resultGroup = this.add.container(0, 0, children).setDepth(30);
+    this.renderResultActions();
 
     if (isVictory) this.spawnConfetti();
     else this.spawnSparks();
+  }
+
+  private renderResultActions(): void {
+    const action = this.resultActionContainer;
+    if (!action) return;
+    action.removeAll(true);
+
+    const onExit = () => {
+      this.exitToLobbyCallback?.();
+    };
+
+    if (this.isDemo) {
+      const playBtn = this.makeButton('Play Again', '#0e7490', '#155e75', -95, 0, () => {
+        if (this.input.keyboard) this.input.keyboard.enabled = true;
+        this.scene.restart();
+      });
+      const exitBtn = this.makeButton('Exit to Lobby', '#475569', '#334155', 95, 0, onExit);
+      action.add([playBtn, exitBtn]);
+      return;
+    }
+
+    /** Live mode: rematch flow with waiting/accepted states. */
+    if (this.weAcceptedRematch) {
+      const note = this.add
+        .text(
+          0,
+          -22,
+          this.opponentAcceptedRematch
+            ? 'Both accepted — starting…'
+            : 'Waiting for opponent…',
+          {
+            fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+            fontSize: '14px',
+            color: '#fbbf24',
+          },
+        )
+        .setOrigin(0.5);
+      const exitBtn = this.makeButton('Exit to Lobby', '#475569', '#334155', 0, 22, onExit);
+      action.add([note, exitBtn]);
+    } else {
+      const playLabel = this.opponentAcceptedRematch
+        ? 'Play Again  •  opponent ready'
+        : 'Play Again';
+      const playBg = this.opponentAcceptedRematch ? '#16a34a' : '#0e7490';
+      const playHover = this.opponentAcceptedRematch ? '#22c55e' : '#155e75';
+      const playBtn = this.makeButton(playLabel, playBg, playHover, -110, 0, () => {
+        if (!this.sendGameMessage || !this.matchId) return;
+        this.weAcceptedRematch = true;
+        this.sendGameMessage({ type: 'request_rematch', matchId: this.matchId });
+        this.renderResultActions();
+      });
+      const exitBtn = this.makeButton('Exit to Lobby', '#475569', '#334155', 110, 0, onExit);
+      action.add([playBtn, exitBtn]);
+    }
+  }
+
+  private makeButton(
+    label: string,
+    bgColor: string,
+    hoverBg: string,
+    x: number,
+    y: number,
+    onClick: () => void,
+  ): Phaser.GameObjects.Text {
+    const btn = this.add
+      .text(x, y, label, {
+        fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+        fontSize: '16px',
+        fontStyle: 'bold',
+        color: '#e2e8f0',
+        backgroundColor: bgColor,
+        padding: { left: 18, right: 18, top: 10, bottom: 10 },
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    btn.on('pointerover', () => btn.setBackgroundColor(hoverBg));
+    btn.on('pointerout', () => btn.setBackgroundColor(bgColor));
+    btn.on('pointerdown', onClick);
+    return btn;
   }
 
   private spawnConfetti(): void {
@@ -1358,17 +1660,15 @@ export class ArenaScene extends Phaser.Scene {
       camera.setBounds(0, 0, width, height);
     }
 
-    /** Backgrounds. */
-    this.drawSky(width, height);
-    this.drawParallax(width, height);
+    /** Background image — re-cover the new canvas extents. */
+    this.fitBackground(width, height);
 
-    /** Ground. */
+    /** Ground physics rectangle still tracks the new floor (invisible). */
     if (this.ground) {
       this.ground.setPosition(width / 2, height - GROUND_HEIGHT / 2);
       this.ground.setSize(width, GROUND_HEIGHT);
       (this.ground.body as Phaser.Physics.Arcade.StaticBody | null)?.updateFromGameObject();
     }
-    this.drawGround(width, height);
 
     /** Platforms — reposition by fraction, refresh static bodies. */
     const platChildren = this.platforms?.getChildren() as
@@ -1425,10 +1725,22 @@ export class ArenaScene extends Phaser.Scene {
     /** HUD. */
     if (this.bannerBg) this.bannerBg.setPosition(width / 2, 18);
     if (this.bannerText) this.bannerText.setPosition(width / 2, 18);
+    if (this.roundScoreText) this.roundScoreText.setPosition(20, 14);
     if (this.ammoText) {
       this.ammoText.setPosition(width - 18, 44);
       this.ammoLabel.setPosition(width - 18, 68);
       this.repositionAmmoIcon();
+    }
+
+    /** Inter-round overlay (if showing). */
+    if (this.interRoundGroup) {
+      const list = this.interRoundGroup.list as Phaser.GameObjects.GameObject[];
+      const [backdrop, title] = list as [Phaser.GameObjects.Rectangle, Phaser.GameObjects.Text];
+      if (backdrop) {
+        backdrop.setPosition(width / 2, height / 2);
+        backdrop.setSize(width, height);
+      }
+      if (title) title.setPosition(width / 2, height / 2);
     }
 
     /** Result overlay (if showing). */
@@ -1440,15 +1752,15 @@ export class ArenaScene extends Phaser.Scene {
         Phaser.GameObjects.Text,
         Phaser.GameObjects.Rectangle,
         Phaser.GameObjects.Text,
-        Phaser.GameObjects.Text | undefined,
+        Phaser.GameObjects.Container | undefined,
       ];
       backdrop.setPosition(width / 2, height / 2);
       backdrop.setSize(width, height);
-      title.setPosition(width / 2, height / 2 - 90);
-      subtitle.setPosition(width / 2, height / 2 - 36);
-      statsBg.setPosition(width / 2, height / 2 + 36);
-      statsText.setPosition(width / 2, height / 2 + 36);
-      if (action) action.setPosition(width / 2, height / 2 + 130);
+      title.setPosition(width / 2, height / 2 - 110);
+      subtitle.setPosition(width / 2, height / 2 - 56);
+      statsBg.setPosition(width / 2, height / 2 + 10);
+      statsText.setPosition(width / 2, height / 2 + 10);
+      if (action) action.setPosition(width / 2, height / 2 + 110);
     }
   };
 

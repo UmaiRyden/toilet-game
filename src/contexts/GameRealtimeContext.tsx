@@ -18,8 +18,11 @@ import type { PlatformSpec, RoomPlayer, RoomStatePayload } from '../types/realti
 
 const ROOM_JOIN_ERRORS = new Set(['ROOM_NOT_FOUND', 'ROOM_FULL', 'NOT_IN_ROOM']);
 
-/** Visible victory/defeat overlay window between game_over and navigation. */
-const RESOLVE_NAV_DELAY_MS = 3000;
+/** Match-end window before navigation — long enough for the scene's rematch prompt. */
+const RESOLVE_NAV_DELAY_MS = 15000;
+
+/** Scene-targeted message types that don't share the game_ prefix. */
+const SCENE_TYPE_PASSTHROUGH = new Set(['round_ended', 'rematch_status']);
 
 export type GameMessage = Record<string, unknown> & { type: string };
 
@@ -71,6 +74,7 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
   const joinedRoomIdRef = useRef<string | null>(null);
   const navigatingToMatchRef = useRef(false);
   const gameListenersRef = useRef<Set<(msg: GameMessage) => void>>(new Set());
+  const matchResolvedNavTimerRef = useRef<number | null>(null);
 
   const [playerId, setPlayerId] = useState<string | null>(null);
   const [roomState, setRoomState] = useState<RoomStatePayload | null>(null);
@@ -246,6 +250,11 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
         const rid = msg.roomId as string | undefined;
         const platforms = parsePlatforms(msg.platforms);
         if (mid) {
+          /** A rematch starts before the previous match_resolved nav timer fires. Cancel it. */
+          if (matchResolvedNavTimerRef.current !== null) {
+            window.clearTimeout(matchResolvedNavTimerRef.current);
+            matchResolvedNavTimerRef.current = null;
+          }
           navigatingToMatchRef.current = true;
           clearActiveRoomId();
           setActiveMatchId(mid);
@@ -289,13 +298,22 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
           }
         };
         if (reason === 'eliminated') {
-          window.setTimeout(applyNavigation, RESOLVE_NAV_DELAY_MS);
+          if (matchResolvedNavTimerRef.current !== null) {
+            window.clearTimeout(matchResolvedNavTimerRef.current);
+          }
+          matchResolvedNavTimerRef.current = window.setTimeout(() => {
+            matchResolvedNavTimerRef.current = null;
+            applyNavigation();
+          }, RESOLVE_NAV_DELAY_MS);
         } else {
           applyNavigation();
         }
       }
 
-      if (typeof type === 'string' && type.startsWith('game_')) {
+      if (
+        typeof type === 'string' &&
+        (type.startsWith('game_') || SCENE_TYPE_PASSTHROUGH.has(type))
+      ) {
         const snapshot = [...gameListenersRef.current];
         for (const handler of snapshot) {
           try {

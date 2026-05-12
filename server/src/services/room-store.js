@@ -23,6 +23,8 @@ const EMPTY_ROOM_TTL_MS = 10 * 60 * 1000;
 const MATCH_RECORD_TTL_MS = 2 * 60 * 60 * 1000;
 const READY_COUNTDOWN_MS = 5000;
 const RECONNECT_GRACE_MS = 60 * 1000;
+const REMATCH_WINDOW_MS = 15 * 1000;
+const ROUNDS_TO_WIN_MATCH = 2;
 
 /** @type {Map<string, Room>} */
 const rooms = new Map();
@@ -211,8 +213,16 @@ function finalizeMatch(room) {
       [room.players[0].playerId]: { health: 100 },
       [room.players[1].playerId]: { health: 100 },
     },
+    roundsWon: {
+      [room.players[0].playerId]: 0,
+      [room.players[1].playerId]: 0,
+    },
+    roundNumber: 1,
     platforms,
   };
+  /** A stale rematch window from the prior match shouldn't influence this one. */
+  if (room.rematchWindow?.timer) clearTimeout(room.rematchWindow.timer);
+  room.rematchWindow = null;
   room.players.forEach((p) => {
     p.ready = false;
   });
@@ -240,8 +250,8 @@ function resolveMatchByElimination(room, matchId, winner, loser) {
   const winnerPlayerId = winner.playerId;
   const loserPlayerId = loser.playerId;
 
+  /** Halt further game-message processing immediately. */
   room.activeMatchId = null;
-  room.gameState = null;
   activeMatches.delete(matchId);
 
   const overPayload = JSON.stringify({
@@ -269,8 +279,39 @@ function resolveMatchByElimination(room, matchId, winner, loser) {
     if (p.ws && p.ws.readyState === 1) p.ws.send(resolution);
   }
 
-  if (loser.ws) loser.ws.roomId = null;
-  room.players = room.players.filter((p) => p.playerId !== loserPlayerId);
+  /**
+   * Defer the "remove loser from room" cleanup. Both players stay seated during the
+   * REMATCH_WINDOW_MS window so they can opt in to a fresh match. If neither / only one
+   * accepts within the window, finalizeRematchWindow runs the normal post-match cleanup.
+   */
+  if (room.rematchWindow?.timer) clearTimeout(room.rematchWindow.timer);
+  room.rematchWindow = {
+    matchId,
+    winnerPlayerId,
+    loserPlayerId,
+    acceptedBy: new Set(),
+    timer: setTimeout(() => finalizeRematchWindow(room, matchId), REMATCH_WINDOW_MS),
+  };
+
+  broadcastLobby();
+}
+
+/**
+ * Tear down a stale rematch window — fires on timeout, decline, or disconnect.
+ * Completes the post-match cleanup that resolveMatchByElimination deferred.
+ * @param {Room} room
+ * @param {string} matchId
+ */
+function finalizeRematchWindow(room, matchId) {
+  const win = room.rematchWindow;
+  if (!win || win.matchId !== matchId) return;
+  if (win.timer) clearTimeout(win.timer);
+  room.rematchWindow = null;
+  room.gameState = null;
+
+  const loser = room.players.find((p) => p.playerId === win.loserPlayerId);
+  if (loser?.ws) loser.ws.roomId = null;
+  room.players = room.players.filter((p) => p.playerId !== win.loserPlayerId);
   room.players.forEach((p) => {
     p.ready = false;
   });
@@ -750,13 +791,80 @@ export function dispatchMessage(ws, text) {
       }
 
       if (targetState.health <= 0) {
-        resolveMatchByElimination(room, room.activeMatchId, shooter, target);
+        /** Round end — credit the shooter, then either close the match or roll into the next round. */
+        const roundsWon = room.gameState.roundsWon;
+        roundsWon[shooter.playerId] = (roundsWon[shooter.playerId] || 0) + 1;
+
+        if (roundsWon[shooter.playerId] >= ROUNDS_TO_WIN_MATCH) {
+          resolveMatchByElimination(room, room.activeMatchId, shooter, target);
+        } else {
+          /** Reset healths for the next round and broadcast the score. */
+          room.gameState.players[shooter.playerId].health = 100;
+          room.gameState.players[target.playerId].health = 100;
+          room.gameState.roundNumber = (room.gameState.roundNumber || 1) + 1;
+
+          const roundEndedPayload = JSON.stringify({
+            type: 'round_ended',
+            matchId: room.activeMatchId,
+            roundWinnerPlayerId: shooter.playerId,
+            roundLoserPlayerId: target.playerId,
+            nextRound: room.gameState.roundNumber,
+            scores: {
+              [room.players[0].playerId]: roundsWon[room.players[0].playerId] || 0,
+              [room.players[1].playerId]: roundsWon[room.players[1].playerId] || 0,
+            },
+            playerHealth: 100,
+          });
+          for (const p of room.players) {
+            if (p.ws && p.ws.readyState === 1) p.ws.send(roundEndedPayload);
+          }
+        }
       }
       break;
     }
     case 'game_over': {
       /** Server is the authority on match end (driven by game_hit reaching 0). */
       /** Ignore client-sent game_over; left here to make the protocol whitelist explicit. */
+      break;
+    }
+    case 'request_rematch': {
+      const rid = ws.roomId;
+      if (!rid || typeof rid !== 'string') return;
+      const room = rooms.get(rid);
+      if (!room || !room.rematchWindow) return;
+      const requesterId = ws.playerId;
+      if (
+        requesterId !== room.rematchWindow.winnerPlayerId &&
+        requesterId !== room.rematchWindow.loserPlayerId
+      ) {
+        return;
+      }
+      room.rematchWindow.acceptedBy.add(requesterId);
+
+      const status = JSON.stringify({
+        type: 'rematch_status',
+        matchId: room.rematchWindow.matchId,
+        acceptedBy: [...room.rematchWindow.acceptedBy],
+      });
+      for (const p of room.players) {
+        if (p.ws && p.ws.readyState === 1) p.ws.send(status);
+      }
+
+      if (room.rematchWindow.acceptedBy.size >= 2) {
+        const bothConnected =
+          room.players.length === 2 &&
+          room.players.every((p) => p.ws && p.ws.readyState === 1);
+        if (!bothConnected) {
+          finalizeRematchWindow(room, room.rematchWindow.matchId);
+          break;
+        }
+        clearTimeout(room.rematchWindow.timer);
+        room.rematchWindow = null;
+        room.players.forEach((p) => {
+          p.ready = true;
+        });
+        finalizeMatch(room);
+      }
       break;
     }
     default:

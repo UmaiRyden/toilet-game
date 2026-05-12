@@ -2,18 +2,21 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import { useLobbyRooms } from '../hooks/useLobbyRooms';
+import type { RoomSummary } from '../types/realtime';
 
 const TIERS = ['All', '100', '500', '1000'] as const;
+type Tier = (typeof TIERS)[number];
+
+const STAKE_OPTIONS: ReadonlyArray<'100' | '500' | '1000'> = ['100', '500', '1000'];
 
 export function LobbyPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { rooms, initialLoading, loadError, wsReady, wsAlive, refreshList, createRoom } = useLobbyRooms({
-    navigate,
-  });
+  const { rooms, initialLoading, loadError, wsReady, wsAlive, refreshList, createRoom } =
+    useLobbyRooms({ navigate });
 
   const [notice, setNotice] = useState<string | null>(null);
-  const [tier, setTier] = useState<(typeof TIERS)[number]>('All');
+  const [tier, setTier] = useState<Tier>('All');
   const [createOpen, setCreateOpen] = useState(false);
   const [newStake, setNewStake] = useState<'100' | '500' | '1000'>('100');
 
@@ -38,202 +41,210 @@ export function LobbyPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-6">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-4">
-        <Link
-          to="/"
-          className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/10"
-        >
-          ← Main menu
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 pb-4">
+        <Link to="/" className="group flex items-center gap-2">
+          <span className="text-xl" aria-hidden>
+            🚽
+          </span>
+          <span className="text-sm font-black tracking-tight text-white sm:text-base">
+            TOILET<span className="text-emerald-400 group-hover:text-emerald-300">WIF</span>HAT
+          </span>
         </Link>
-        <span className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-400/90">Paid lobby</span>
-        <span className="w-20" aria-hidden />
+        <div className="flex items-center gap-2">
+          <span
+            className={[
+              'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ring-1',
+              wsAlive
+                ? 'bg-emerald-500/10 text-emerald-300 ring-emerald-500/30'
+                : 'bg-amber-500/10 text-amber-300 ring-amber-500/30',
+            ].join(' ')}
+          >
+            <span
+              className={[
+                'h-1.5 w-1.5 rounded-full',
+                wsAlive ? 'animate-pulse bg-emerald-400' : 'bg-amber-400',
+              ].join(' ')}
+            />
+            {wsAlive ? 'Live' : 'Connecting'}
+          </span>
+          <Link
+            to="/"
+            className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 hover:border-white/20 hover:text-white"
+          >
+            ← Menu
+          </Link>
+        </div>
       </header>
 
       {notice ? (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-          {notice}
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          <span>{notice}</span>
           <button
             type="button"
             onClick={() => setNotice(null)}
-            className="ml-3 text-amber-300 underline"
+            className="shrink-0 text-amber-300 underline-offset-2 hover:underline"
           >
             Dismiss
           </button>
         </div>
       ) : null}
 
-      <section className="relative overflow-hidden rounded-3xl border border-white/10 bg-linear-to-br from-slate-900 via-slate-900/90 to-slate-950 px-5 py-7 shadow-xl sm:px-8">
+      <section className="relative overflow-hidden rounded-3xl border border-white/10 bg-linear-to-br from-emerald-950/30 via-slate-900 to-slate-950 px-5 py-7 shadow-xl shadow-emerald-950/30 sm:px-8 sm:py-8">
         <div
-          className="pointer-events-none absolute -right-16 top-0 h-48 w-48 rounded-full bg-emerald-500/10 blur-3xl"
+          className="pointer-events-none absolute -right-20 -top-16 h-56 w-56 rounded-full bg-emerald-500/20 blur-3xl"
           aria-hidden
         />
-        <div className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="relative flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-white sm:text-3xl">Open rooms</h1>
-            <p className="mt-2 max-w-lg text-sm leading-relaxed text-slate-400">
-              Host a table or take a seat. Reusing “Create” with the same stake keeps one empty table per browser
-              session.
+            <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-emerald-400/90">
+              Paid arenas
+            </p>
+            <h1 className="mt-3 text-3xl font-black tracking-tighter text-white sm:text-4xl">
+              Open rooms
+            </h1>
+            <p className="mt-2 max-w-md text-sm leading-relaxed text-slate-400">
+              Take a seat at someone else's table, or host your own and wait for a challenger.
             </p>
           </div>
-          <div className="flex shrink-0 flex-col gap-1 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-xs sm:text-sm">
-            <span className="font-medium text-slate-300">Status</span>
-            <span className={wsAlive ? 'text-emerald-400' : 'text-amber-400'}>
-              {wsAlive ? 'Live' : 'Connecting…'}
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            disabled={!wsReady}
+            className="group inline-flex items-center gap-2 rounded-xl bg-linear-to-br from-emerald-400 to-emerald-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-900/40 ring-1 ring-emerald-400/40 transition hover:from-emerald-300 hover:to-emerald-500 hover:shadow-emerald-800/50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span aria-hidden className="text-base leading-none">
+              +
             </span>
-          </div>
+            Host new room
+          </button>
         </div>
       </section>
 
       {loadError ? (
         <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
           {loadError}{' '}
-          <button type="button" onClick={() => void refreshList()} className="text-sky-400 underline">
+          <button
+            type="button"
+            onClick={() => void refreshList()}
+            className="ml-1 font-medium text-sky-300 underline-offset-2 hover:underline"
+          >
             Retry
           </button>
         </div>
       ) : null}
 
-      <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap gap-2">
           {TIERS.map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTier(t)}
-              className={[
-                'rounded-full border px-3 py-1.5 text-xs font-semibold transition sm:text-sm',
-                tier === t
-                  ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-200'
-                  : 'border-slate-700 bg-slate-900/50 text-slate-400 hover:border-slate-600 hover:text-slate-200',
-              ].join(' ')}
-            >
-              {t === 'All' ? 'All stakes' : `${t} $TOILET`}
-            </button>
+            <StakeChip key={t} tier={t} active={tier === t} onSelect={() => setTier(t)} />
           ))}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => void refreshList()}
-            className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800"
-          >
-            Refresh list
-          </button>
-          <button
-            type="button"
-            onClick={() => setCreateOpen(true)}
-            disabled={!wsReady}
-            className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-900/30 hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Create room
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => void refreshList()}
+          className="inline-flex items-center gap-1.5 self-start rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-white/20 hover:text-white sm:self-auto"
+        >
+          <span aria-hidden>↻</span> Refresh
+        </button>
       </div>
 
       {initialLoading && rooms.length === 0 ? (
         <p className="text-sm text-slate-500">Loading rooms…</p>
       ) : null}
 
-      {filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-700 bg-slate-900/30 px-6 py-16 text-center">
-          <p className="text-4xl" aria-hidden>
-            🚽
-          </p>
-          <p className="mt-4 text-lg font-semibold text-white">No rooms match this filter</p>
-          <p className="mt-2 max-w-sm text-sm text-slate-400">
-            Try another stake chip or create a room when status shows Live.
+      {filtered.length === 0 && !initialLoading ? (
+        <div className="flex flex-col items-center justify-center rounded-3xl border border-dashed border-slate-700 bg-slate-900/30 px-6 py-16 text-center">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-white/10 bg-linear-to-br from-slate-800 to-slate-900 text-3xl shadow-inner">
+            <span aria-hidden>🚽</span>
+          </div>
+          <h3 className="mt-5 text-xl font-bold text-white">No arenas open yet</h3>
+          <p className="mt-2 max-w-sm text-sm leading-relaxed text-slate-400">
+            Be the first to host. Pick a stake and a challenger will join from the lobby.
           </p>
           <button
             type="button"
-            onClick={() => setTier('All')}
-            className="mt-6 rounded-xl bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
+            onClick={() => setCreateOpen(true)}
+            disabled={!wsReady}
+            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/30 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Show all stakes
+            <span aria-hidden>+</span> Host the first room
           </button>
         </div>
       ) : (
-        <ul className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40 shadow-lg shadow-black/20">
+        <div className="grid gap-3 sm:grid-cols-2">
           {filtered.map((r) => (
-            <li
-              key={r.id}
-              className="flex flex-col gap-3 border-b border-slate-800/80 px-4 py-4 last:border-b-0 sm:flex-row sm:items-center sm:justify-between sm:px-5"
-            >
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-sm font-medium text-white">{r.id}</span>
-                  {r.seatsFilled >= r.seatsTotal ? (
-                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
-                      Full
-                    </span>
-                  ) : r.awaitingHost ? (
-                    <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-300">
-                      Host joining
-                    </span>
-                  ) : (
-                    <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
-                      Open
-                    </span>
-                  )}
-                </div>
-                <p className="mt-1 text-xs text-slate-500">
-                  Host <span className="text-slate-400">{r.hostDisplay}</span>
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-3 sm:gap-4">
-                <span className="text-sm font-semibold text-emerald-400">{r.stakeLabel}</span>
-                <span className="text-xs text-slate-500 sm:text-sm">
-                  {r.seatsFilled}/{r.seatsTotal} players
-                </span>
-                {r.seatsFilled >= r.seatsTotal ? (
-                  <span className="rounded-lg border border-slate-800 bg-slate-900/80 px-4 py-2 text-center text-sm text-slate-500">
-                    —
-                  </span>
-                ) : (
-                  <Link
-                    to={`/room/${r.id}`}
-                    className="rounded-lg bg-slate-100 px-4 py-2 text-center text-sm font-semibold text-slate-900 hover:bg-white"
-                  >
-                    Join
-                  </Link>
-                )}
-              </div>
-            </li>
+            <RoomCard key={r.id} room={r} />
           ))}
-        </ul>
+        </div>
       )}
 
       {createOpen ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md"
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-room-title"
+          onClick={() => setCreateOpen(false)}
         >
-          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
-            <h2 id="create-room-title" className="text-lg font-bold text-white">
-              Create room
+          <div
+            className="w-full max-w-md rounded-3xl border border-white/10 bg-linear-to-br from-slate-900 to-slate-950 p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-emerald-400/90">
+              New arena
+            </p>
+            <h2
+              id="create-room-title"
+              className="mt-2 text-2xl font-black tracking-tight text-white"
+            >
+              Host a room
             </h2>
-            <p className="mt-2 text-sm text-slate-400">Choose stake — you will join this table as host.</p>
-            <label className="mt-6 block text-xs font-medium uppercase tracking-wide text-slate-500">
+            <p className="mt-2 text-sm leading-relaxed text-slate-400">
+              Pick your stake. You'll join the table as host and wait for a challenger.
+            </p>
+            <label className="mt-7 block text-[10px] font-bold uppercase tracking-[0.3em] text-slate-500">
               Stake
             </label>
-            <select
-              value={newStake}
-              onChange={(e) => setNewStake(e.target.value as '100' | '500' | '1000')}
-              className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/40"
-            >
-              <option value="100">100 $TOILET</option>
-              <option value="500">500 $TOILET</option>
-              <option value="1000">1,000 $TOILET</option>
-            </select>
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              {STAKE_OPTIONS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setNewStake(s)}
+                  className={[
+                    'rounded-2xl border-2 px-3 py-4 text-center transition',
+                    newStake === s
+                      ? 'border-emerald-400/70 bg-emerald-500/10 shadow-lg shadow-emerald-900/30'
+                      : 'border-slate-700/80 bg-slate-900/60 hover:border-slate-500',
+                  ].join(' ')}
+                >
+                  <div
+                    className={[
+                      'text-2xl font-black tracking-tight',
+                      newStake === s ? 'text-emerald-200' : 'text-slate-200',
+                    ].join(' ')}
+                  >
+                    {Number(s).toLocaleString()}
+                  </div>
+                  <div
+                    className={[
+                      'mt-0.5 text-[10px] font-bold uppercase tracking-[0.2em]',
+                      newStake === s ? 'text-emerald-400/90' : 'text-slate-500',
+                    ].join(' ')}
+                  >
+                    $TOILET
+                  </div>
+                </button>
+              ))}
+            </div>
             {!wsReady ? (
-              <p className="mt-3 text-xs text-amber-400">Waiting for connection…</p>
+              <p className="mt-4 text-xs text-amber-400">Waiting for connection…</p>
             ) : null}
-            <div className="mt-6 flex justify-end gap-2">
+            <div className="mt-7 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setCreateOpen(false)}
-                className="rounded-lg border border-slate-600 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800"
+                className="rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-white/10"
               >
                 Cancel
               </button>
@@ -241,14 +252,130 @@ export function LobbyPage() {
                 type="button"
                 onClick={handleCreateRoom}
                 disabled={!wsReady}
-                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg bg-linear-to-br from-emerald-400 to-emerald-600 px-5 py-2 text-sm font-bold text-white shadow-md shadow-emerald-900/30 hover:from-emerald-300 hover:to-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Create
+                Open table
               </button>
             </div>
           </div>
         </div>
       ) : null}
     </div>
+  );
+}
+
+function StakeChip({
+  tier,
+  active,
+  onSelect,
+}: {
+  tier: Tier;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  const isAll = tier === 'All';
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={active}
+      className={[
+        'relative overflow-hidden rounded-2xl border-2 px-4 py-2 transition',
+        active
+          ? 'border-emerald-400/70 bg-emerald-500/15 shadow-md shadow-emerald-500/15'
+          : 'border-slate-700/80 bg-slate-900/60 hover:border-slate-500 hover:bg-slate-900',
+      ].join(' ')}
+    >
+      <div className="flex items-baseline gap-1.5">
+        <span
+          className={[
+            'font-mono text-sm font-black tracking-tight sm:text-base',
+            active ? 'text-emerald-100' : 'text-slate-200',
+          ].join(' ')}
+        >
+          {isAll ? 'ALL' : Number(tier).toLocaleString()}
+        </span>
+        {!isAll ? (
+          <span
+            className={[
+              'text-[9px] font-bold uppercase tracking-[0.2em]',
+              active ? 'text-emerald-400/90' : 'text-slate-500',
+            ].join(' ')}
+          >
+            $TOILET
+          </span>
+        ) : (
+          <span
+            className={[
+              'text-[9px] font-bold uppercase tracking-[0.2em]',
+              active ? 'text-emerald-400/90' : 'text-slate-500',
+            ].join(' ')}
+          >
+            stakes
+          </span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function RoomCard({ room }: { room: RoomSummary }) {
+  const isFull = room.seatsFilled >= room.seatsTotal;
+  return (
+    <article className="group relative flex flex-col overflow-hidden rounded-2xl border border-slate-800/80 bg-linear-to-br from-slate-900/90 via-slate-900/60 to-slate-950/90 p-5 shadow-md shadow-black/20 transition hover:-translate-y-0.5 hover:border-emerald-500/40 hover:shadow-lg hover:shadow-emerald-900/20">
+      <div
+        className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-emerald-500/0 blur-3xl transition group-hover:bg-emerald-500/10"
+        aria-hidden
+      />
+      <header className="flex items-center justify-between gap-2">
+        <span className="font-mono text-[11px] tracking-tight text-slate-500">{room.id}</span>
+        {isFull ? (
+          <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-300 ring-1 ring-amber-500/30">
+            Full
+          </span>
+        ) : room.awaitingHost ? (
+          <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-violet-300 ring-1 ring-violet-500/30">
+            Host joining
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-300 ring-1 ring-emerald-500/30">
+            <span className="h-1 w-1 animate-pulse rounded-full bg-emerald-400" />
+            Open
+          </span>
+        )}
+      </header>
+      <div className="mt-4">
+        <p className="font-mono text-3xl font-black tracking-tight text-white sm:text-4xl">
+          {room.stakeSol.toLocaleString()}
+        </p>
+        <p className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.3em] text-emerald-400/90">
+          $TOILET stake
+        </p>
+      </div>
+      <footer className="mt-6 flex items-end justify-between gap-3 border-t border-slate-800 pt-4">
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Host</p>
+          <p className="mt-0.5 truncate text-xs font-semibold text-slate-300">{room.hostDisplay}</p>
+          <p className="mt-1 text-[10px] text-slate-500">
+            Seats <span className="text-slate-400">{room.seatsFilled}/{room.seatsTotal}</span>
+          </p>
+        </div>
+        {isFull ? (
+          <span className="rounded-lg border border-slate-800 bg-slate-900/80 px-4 py-2 text-xs font-medium text-slate-500">
+            Full
+          </span>
+        ) : (
+          <Link
+            to={`/room/${room.id}`}
+            className="inline-flex items-center gap-1 rounded-lg bg-white px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-900 shadow-md transition hover:bg-emerald-300 group-hover:bg-emerald-300"
+          >
+            Join
+            <span aria-hidden className="transition-transform group-hover:translate-x-0.5">
+              →
+            </span>
+          </Link>
+        )}
+      </footer>
+    </article>
   );
 }
