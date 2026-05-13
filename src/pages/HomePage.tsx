@@ -9,9 +9,17 @@ export function HomePage() {
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
           2D PvP arena
         </span>
-        <h1 className="mt-6 text-5xl font-black leading-[0.95] tracking-tighter text-white sm:text-7xl lg:text-8xl">
-          TOILET<span className="text-emerald-400">WIF</span>HAT
-        </h1>
+        <div className="mt-6 flex items-center gap-6">
+          <img
+            src="/assets/characters/soldier.png"
+            className="h-32 w-32 shrink-0 object-contain"
+            alt=""
+            draggable={false}
+          />
+          <h1 className="text-5xl font-black leading-[0.95] tracking-tighter text-white sm:text-7xl lg:text-8xl">
+            $TOILET
+          </h1>
+        </div>
         <p className="mt-5 max-w-xl text-sm leading-relaxed text-slate-400 sm:text-base">
           Wager $TOILET. Outlast your opponent. Best of three rounds — winner takes the pot.
         </p>
