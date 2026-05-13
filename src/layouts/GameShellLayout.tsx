@@ -1,4 +1,4 @@
-import { Outlet } from 'react-router-dom';
+import { Link, Outlet } from 'react-router-dom';
 
 import { GameRealtimeProvider } from '../contexts/GameRealtimeContext';
 
@@ -12,6 +12,12 @@ export function GameShellLayout() {
         aria-hidden
       />
       <div className="relative z-10 mx-auto flex min-h-dvh w-full max-w-5xl flex-col px-4 py-5 sm:px-6 sm:py-8">
+        <header className="mb-4 flex shrink-0 items-center gap-2">
+          <Link to="/" className="flex items-center gap-2">
+            <img src="/assets/characters/soldier.png" className="h-14 w-14 object-contain" alt="$TOILET" />
+            <span className="text-xl font-black text-white">$TOILET</span>
+          </Link>
+        </header>
         <Outlet />
       </div>
     </div>

@@ -41,15 +41,7 @@ export function LobbyPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-6">
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 pb-4">
-        <Link to="/" className="group flex items-center gap-2">
-          <span className="text-xl" aria-hidden>
-            🚽
-          </span>
-          <span className="text-sm font-black tracking-tight text-white sm:text-base">
-            TOILET<span className="text-emerald-400 group-hover:text-emerald-300">WIF</span>HAT
-          </span>
-        </Link>
+      <header className="flex shrink-0 items-center justify-end gap-3 border-b border-white/10 pb-4">
         <div className="flex items-center gap-2">
           <span
             className={[

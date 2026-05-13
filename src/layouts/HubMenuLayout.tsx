@@ -12,14 +12,20 @@ export function HubMenuLayout() {
         aria-hidden
       />
       <div className="relative z-10 mx-auto flex min-h-dvh max-w-6xl flex-col px-4 py-6 sm:px-8 sm:py-10">
-        {!isHome ? (
-          <Link
-            to="/"
-            className="mb-6 inline-flex w-fit items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-white/20 hover:text-white"
-          >
-            ← Main menu
+        <header className="mb-6 flex shrink-0 items-center justify-between gap-3">
+          <Link to="/" className="flex items-center gap-2">
+            <img src="/assets/characters/soldier.png" className="h-14 w-14 object-contain" alt="$TOILET" />
+            <span className="text-xl font-black text-white">$TOILET</span>
           </Link>
-        ) : null}
+          {!isHome ? (
+            <Link
+              to="/"
+              className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-white/20 hover:text-white"
+            >
+              ← Main menu
+            </Link>
+          ) : null}
+        </header>
         <Outlet />
       </div>
     </div>

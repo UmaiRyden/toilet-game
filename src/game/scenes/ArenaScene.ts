@@ -528,11 +528,13 @@ export class ArenaScene extends Phaser.Scene {
      */
     this.playerSprite = this.add.sprite(this.player.x, this.player.y, SOLDIER_KEY);
     this.playerSprite.setDisplaySize(PLAYER_WIDTH, PLAYER_HEIGHT);
+    this.playerSprite.setAlpha(1);
     this.playerSprite.setTint(this.playerPalette.body);
     this.playerSprite.setDepth(6);
 
     this.enemySprite = this.add.sprite(this.enemy.x, this.enemy.y, SOLDIER_KEY);
     this.enemySprite.setDisplaySize(PLAYER_WIDTH, PLAYER_HEIGHT);
+    this.enemySprite.setAlpha(1);
     this.enemySprite.setTint(this.enemyPalette.body);
     this.enemySprite.setDepth(6);
   }

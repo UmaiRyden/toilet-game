@@ -71,14 +71,6 @@ export function MatchPage() {
               <span aria-hidden>←</span> Lobby
             </Link>
           ) : null}
-          <Link to="/" className="flex items-center gap-2">
-            <span className="text-lg" aria-hidden>
-              🚽
-            </span>
-            <span className="text-sm font-black tracking-tight text-white">
-              TOILET<span className="text-emerald-400">WIF</span>HAT
-            </span>
-          </Link>
         </div>
 
         <div className="flex items-center gap-2">
