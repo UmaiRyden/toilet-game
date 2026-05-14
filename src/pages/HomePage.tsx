@@ -20,7 +20,7 @@ export function HomePage() {
             $TOILET
           </h1>
         </div>
-        <p className="mt-5 max-w-xl text-sm leading-relaxed text-slate-400 sm:text-base">
+        <p className="mt-5 max-w-2xl text-sm leading-relaxed text-slate-400 sm:text-base">
           Wager $TOILET. Outlast your opponent. Best of three rounds — winner takes the pot.
         </p>
       </header>
