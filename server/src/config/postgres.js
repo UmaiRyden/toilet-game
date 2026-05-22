@@ -21,6 +21,9 @@ const url = process.env.DATABASE_URL?.trim() || DEFAULT_URL;
 /** SSL is required by most hosted providers; opt in via DATABASE_SSL=true. */
 const useSsl = (process.env.DATABASE_SSL ?? '').toLowerCase() === 'true';
 
+const maskedUrl = url.replace(/:\/\/[^@]+@/, '://<credentials>@');
+console.log(`[pg] pool created — ${maskedUrl} ssl=${useSsl}`);
+
 export const pool = new pg.Pool({
   connectionString: url,
   ssl: useSsl ? { rejectUnauthorized: false } : undefined,
@@ -29,13 +32,16 @@ export const pool = new pg.Pool({
   connectionTimeoutMillis: 5_000,
 });
 
-let warnedOffline = false;
-pool.on('error', (err) => {
-  /** Pool emits 'error' for idle clients dropped by the server — log once, don't crash. */
-  if (!warnedOffline) {
-    warnedOffline = true;
-    console.error(`[pg] pool error: ${err?.message ?? err}`);
+let connectedOnce = false;
+pool.on('connect', () => {
+  if (!connectedOnce) {
+    connectedOnce = true;
+    console.log('[pg] connected to database');
   }
+});
+
+pool.on('error', (err) => {
+  console.error('[pg] pool error:', err?.message ?? err);
 });
 
 /**

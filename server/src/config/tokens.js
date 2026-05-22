@@ -28,6 +28,9 @@ export function getTokenInfo() {
   try {
     const raw = fs.readFileSync(TOKEN_INFO_PATH, 'utf8');
     cached = JSON.parse(raw);
+    console.log(
+      `[config/tokens] loaded from file — mint=${cached.mint?.slice(0, 8)}… treasury=${cached.treasury?.slice(0, 8) ?? '(none)'}…`,
+    );
     return cached;
   } catch (err) {
     // File absent — fall through to env vars
@@ -41,7 +44,7 @@ export function getTokenInfo() {
   if (mint) {
     cached = { mint, decimals, treasury: treasury || null };
     console.log(
-      `[config/tokens] loaded from env — mint=${mint} decimals=${decimals} treasury=${treasury || '(none)'}`,
+      `[config/tokens] loaded from env — mint=${mint.slice(0, 8)}… decimals=${decimals} treasury=${treasury ? treasury.slice(0, 8) + '…' : '(none)'}`,
     );
   } else {
     console.warn(

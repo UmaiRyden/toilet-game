@@ -20,12 +20,13 @@ export async function runStartupMigration() {
     console.error(`[pg] could not read schema.sql at ${SCHEMA_PATH}:`, err?.message ?? err);
     return false;
   }
+  console.log('[pg] attempting migration...');
   try {
     await queryOrThrow(sql);
-    console.log('[pg] schema migration applied');
+    console.log('[pg] migration complete');
     return true;
   } catch (err) {
-    console.error('[pg] migration failed — match history will be disabled:', err?.message ?? err);
+    console.error('[pg] migration error:', err?.message ?? err, err?.stack ?? '');
     return false;
   }
 }
