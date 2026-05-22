@@ -23,20 +23,42 @@ let loadAttempted = false;
 export function getTokenInfo() {
   if (loadAttempted) return cached;
   loadAttempted = true;
+
+  // Try file first (local dev)
   try {
     const raw = fs.readFileSync(TOKEN_INFO_PATH, 'utf8');
     cached = JSON.parse(raw);
+    return cached;
   } catch (err) {
+    // File absent — fall through to env vars
+  }
+
+  // Fall back to individual env variables (Railway / hosted deployments)
+  const mint = (process.env.TOILET_TOKEN_MINT || '').trim();
+  const decimals = parseInt(process.env.TOILET_TOKEN_DECIMALS || '6', 10);
+  const treasury = (process.env.TREASURY_WALLET_ADDRESS || '').trim();
+
+  if (mint) {
+    cached = { mint, decimals, treasury: treasury || null };
+    console.log(
+      `[config/tokens] loaded from env — mint=${mint} decimals=${decimals} treasury=${treasury || '(none)'}`,
+    );
+  } else {
     console.warn(
-      `[config/tokens] could not load token-info from ${TOKEN_INFO_PATH}: ${err.message}`,
+      `[config/tokens] token info unavailable — set TOILET_TOKEN_MINT or TREASURY_TOKEN_INFO_PATH`,
     );
     cached = null;
   }
+
   return cached;
 }
 
 export function getTreasuryAddress() {
-  return getTokenInfo()?.treasury ?? null;
+  return (
+    getTokenInfo()?.treasury ||
+    (process.env.TREASURY_WALLET_ADDRESS || '').trim() ||
+    null
+  );
 }
 
 export function getMintAddress() {

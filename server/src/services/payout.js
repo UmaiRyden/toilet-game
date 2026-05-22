@@ -23,6 +23,8 @@ import {
   transfer,
 } from '@solana/spl-token';
 
+import { getTokenInfo } from '../config/tokens.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -31,13 +33,6 @@ const DEFAULT_KEYPAIR_PATH = path.resolve(
   __dirname,
   '../../../scripts/treasury-keypair.json',
 );
-const DEFAULT_TOKEN_INFO_PATH = path.resolve(
-  __dirname,
-  '../../../scripts/token-info.json',
-);
-
-const TOKEN_INFO_PATH =
-  (process.env.TREASURY_TOKEN_INFO_PATH || '').trim() || DEFAULT_TOKEN_INFO_PATH;
 
 /**
  * Load the treasury keypair. Tries the file path first (local dev), then falls
@@ -82,12 +77,14 @@ function initIfNeeded() {
       );
       return false;
     }
-    if (!fs.existsSync(TOKEN_INFO_PATH)) {
-      console.error(`[payout] token info not found at ${TOKEN_INFO_PATH}`);
+    tokenInfo = getTokenInfo();
+    if (!tokenInfo?.mint) {
+      console.error(
+        '[payout] token info unavailable — set TOILET_TOKEN_MINT or TREASURY_TOKEN_INFO_PATH',
+      );
       treasury = null;
       return false;
     }
-    tokenInfo = JSON.parse(fs.readFileSync(TOKEN_INFO_PATH, 'utf8'));
     connection = new Connection(clusterApiUrl('devnet'), 'confirmed');
     console.log(
       `[payout] ready — treasury=${treasury.publicKey.toBase58()} mint=${tokenInfo.mint}`,
