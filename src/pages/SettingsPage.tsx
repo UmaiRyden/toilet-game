@@ -1,6 +1,12 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { useNavigate } from 'react-router-dom';
 
-type CrosshairStyle = 'dot' | 'circle' | 'cross';
+import { ConnectWalletButton } from '../components/ConnectWalletButton';
+import {
+  useSettings,
+  type AppSettings,
+  type CrosshairStyle,
+} from '../contexts/SettingsContext';
 
 const CROSSHAIR_OPTIONS: ReadonlyArray<{ id: CrosshairStyle; label: string }> = [
   { id: 'dot', label: 'Dot' },
@@ -9,21 +15,52 @@ const CROSSHAIR_OPTIONS: ReadonlyArray<{ id: CrosshairStyle; label: string }> = 
 ];
 
 export function SettingsPage() {
-  const [volume, setVolume] = useState(70);
-  const [sfx, setSfx] = useState(true);
-  const [music, setMusic] = useState(true);
-  const [crosshair, setCrosshair] = useState<CrosshairStyle>('cross');
-  const [showFps, setShowFps] = useState(false);
-  const [displayName, setDisplayName] = useState('');
+  const navigate = useNavigate();
+  const { settings, set } = useSettings();
+
+  /**
+   * Draft state — edits are local until Save. Re-seeded if the persisted
+   * settings change underneath us (e.g. another tab edited them).
+   */
+  const [draft, setDraft] = useState<AppSettings>(settings);
+  useEffect(() => {
+    setDraft(settings);
+  }, [settings]);
+
   const [saved, setSaved] = useState(false);
 
+  const patchDraft = (patch: Partial<AppSettings>) =>
+    setDraft((prev) => ({ ...prev, ...patch }));
+
+  const volume = draft.volume;
+  const sfx = draft.sfxEnabled;
+  const music = draft.musicEnabled;
+  const crosshair = draft.crosshair;
+  const showFps = draft.showFps;
+  const displayName = draft.displayName;
+
+  const setVolume = (v: number) => patchDraft({ volume: v });
+  const setSfx = (v: boolean) => patchDraft({ sfxEnabled: v });
+  const setMusic = (v: boolean) => patchDraft({ musicEnabled: v });
+  const setCrosshair = (v: CrosshairStyle) => patchDraft({ crosshair: v });
+  const setShowFps = (v: boolean) => patchDraft({ showFps: v });
+  const setDisplayName = (v: string) => patchDraft({ displayName: v.slice(0, 24) });
+
   const onSave = () => {
+    set(draft);
     setSaved(true);
     window.setTimeout(() => setSaved(false), 2200);
   };
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6">
+      <button
+        type="button"
+        onClick={() => (window.history.length > 1 ? navigate(-1) : navigate('/'))}
+        className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-white/20 hover:text-white self-start"
+      >
+        ← Back
+      </button>
       <header>
         <span className="inline-flex items-center gap-1.5 rounded-full bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.3em] text-slate-300 ring-1 ring-white/10">
           Preferences
@@ -129,16 +166,7 @@ export function SettingsPage() {
               Required for paid lobbies. Demo and free practice stay open.
             </p>
           </div>
-          <button
-            type="button"
-            disabled
-            className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold text-slate-500"
-          >
-            Connect Wallet
-            <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-violet-300 ring-1 ring-violet-500/30">
-              Phase 2
-            </span>
-          </button>
+          <ConnectWalletButton />
         </div>
       </Section>
 

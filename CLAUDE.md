@@ -96,7 +96,7 @@ toilet/
 - **Backend:** Node.js, native `ws` library (no Express, no Socket.io)
 - **Game Engine:** Phaser.js (to be added)
 - **Realtime:** Raw WebSocket, NOT Socket.io
-- **State:** In-memory Maps on server, sessionStorage on client (no DB yet)
+- **State:** Redis for live room/match state (ioredis); Postgres for match history + player stats (pg); in-memory for timer handles + WS refs; sessionStorage on client.
 
 ## Key Technical Details
 
@@ -151,16 +151,44 @@ npm install
 # Install server deps
 cd server && npm install && cd ..
 
+# Start Redis (one of):
+docker run -p 6379:6379 redis:7-alpine    # Docker (recommended)
+# or: sudo apt install redis-server && redis-server   # WSL / Linux
+# or: hosted instance (Upstash free tier) — set REDIS_URL in .env
+
+# Start Postgres (one of):
+docker run --name toilet-postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=toilet_game -p 5432:5432 -d postgres:16-alpine
+# or: hosted (Railway Postgres, Supabase, Neon) — set DATABASE_URL + DATABASE_SSL=true
+
 # Run both (two terminals)
 npm run dev          # Frontend on :3000
 npm run dev:server   # Backend on :8080
 ```
 
+### Redis configuration
+
+- `REDIS_URL` — connection string, defaults to `redis://localhost:6379`.
+  Supports `rediss://` for TLS (Upstash, etc.).
+- `REDIS_KEY_PREFIX` — key namespace, defaults to `toilet`. Override when sharing a Redis instance across deployments.
+
+All live state (rooms, players, active matches, pending creation flow) is stored in Redis. Timer handles, WebSocket references, and lobby subscribers stay in memory inside `server/src/services/room-store.js` — they're rebuilt on reconnect. On startup the server calls `reconcileOnStartup()` which clears any room data left dangling by a crashed previous process (in-flight stake/countdown/match state is unrecoverable across restart).
+
+### Postgres configuration
+
+- `DATABASE_URL` — connection string, defaults to `postgresql://localhost:5432/toilet_game`.
+- `DATABASE_SSL` — set to `true` for hosted providers requiring TLS (Railway, Supabase, Neon).
+- Schema in `server/src/db/schema.sql` (`matches` + `player_stats`) is applied idempotently on every server start via `server/src/db/migrate.js`.
+- Postgres is **non-blocking**: if it's offline the game still runs — matches just won't be persisted and `/leaderboard` returns an empty array. Errors are logged once per pool.
+- Demo mode (`/match/demo`) is client-only and never reaches the server, so it is never logged.
+
+Production hosting suggestion: Railway Postgres or Supabase. Set `DATABASE_URL` + `DATABASE_SSL=true`.
+
 ## Important Rules
 
 - DO NOT modify existing room-store.js matchmaking logic unless adding game-specific message handlers
 - DO NOT replace raw WebSocket with Socket.io
-- DO NOT add a database in Milestone 1 (in-memory only)
+- Live room state is now Redis-backed; all reads/writes in room-store.js are async. Timer handles MUST stay in memory (`roomTimers` map) — they are not serializable.
 - Server-side hit detection is mandatory, never trust the client
 - Keep the existing UI style (dark theme, Tailwind, rounded cards)
 - All new game code should go in src/game/ directory

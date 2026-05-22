@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 
+import { clearActiveMatchId } from '../lib/matchSession';
+import { clearActiveRoomId } from '../lib/roomSession';
 import { getRealtimeWsUrl } from '../lib/realtime';
 
 type VerifyState = 'checking' | 'verified' | 'failed' | 'skipped';
@@ -57,6 +59,13 @@ export function useMatchSession(matchId: string | undefined) {
         done = true;
         clearTimeout(timer);
         setVerifyState('verified');
+        ws.close();
+      }
+      if (type === 'session_invalid') {
+        /** Server says this matchId is dead — drop the session lock so ActiveRoomRedirect can't loop us back. */
+        clearActiveMatchId();
+        clearActiveRoomId();
+        finishFail();
         ws.close();
       }
       if (type === 'error') {

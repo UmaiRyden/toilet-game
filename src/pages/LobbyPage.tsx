@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 
+import { ConnectWalletButton } from '../components/ConnectWalletButton';
 import { useLobbyRooms } from '../hooks/useLobbyRooms';
+import { useWallet } from '../hooks/useWallet';
 import type { RoomSummary } from '../types/realtime';
 
 const TIERS = ['All', '100', '500', '1000'] as const;
@@ -14,8 +16,11 @@ export function LobbyPage() {
   const location = useLocation();
   const { rooms, initialLoading, loadError, wsReady, wsAlive, refreshList, createRoom } =
     useLobbyRooms({ navigate });
+  const { connected, connect, getToiletBalance } = useWallet();
 
   const [notice, setNotice] = useState<string | null>(null);
+  const [walletError, setWalletError] = useState<string | null>(null);
+  const [balance, setBalance] = useState<number | null>(null);
   const [tier, setTier] = useState<Tier>('All');
   const [createOpen, setCreateOpen] = useState(false);
   const [newStake, setNewStake] = useState<'100' | '500' | '1000'>('100');
@@ -28,20 +33,67 @@ export function LobbyPage() {
     }
   }, [location, navigate]);
 
+  /** Pull a fresh $TOILET balance whenever the wallet connection changes. */
+  useEffect(() => {
+    if (!connected) {
+      setBalance(null);
+      return;
+    }
+    let cancelled = false;
+    void getToiletBalance().then((b) => {
+      if (!cancelled) setBalance(b);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [connected, getToiletBalance]);
+
   const filtered = useMemo(() => {
     if (tier === 'All') return rooms;
     const n = Number(tier);
     return rooms.filter((r) => r.stakeSol === n);
   }, [rooms, tier]);
 
+  function ensureCanWager(stake: number): boolean {
+    if (!connected) {
+      setWalletError('Connect your wallet to play paid matches.');
+      return false;
+    }
+    const have = balance ?? 0;
+    if (have < stake) {
+      setWalletError(
+        `Insufficient $TOILET balance. You need ${stake.toLocaleString()}, you have ${have.toLocaleString()}.`,
+      );
+      return false;
+    }
+    setWalletError(null);
+    return true;
+  }
+
   function handleCreateRoom() {
+    if (!ensureCanWager(Number(newStake))) return;
     createRoom(Number(newStake));
     setCreateOpen(false);
+  }
+
+  function handleJoinRoom(room: RoomSummary) {
+    if (!ensureCanWager(room.stakeSol)) return;
+    navigate(`/room/${room.id}`);
+  }
+
+  function openCreateDialog() {
+    if (!connected) {
+      setWalletError('Connect your wallet to play paid matches.');
+      return;
+    }
+    setWalletError(null);
+    setCreateOpen(true);
   }
 
   return (
     <div className="flex flex-1 flex-col gap-6">
       <header className="flex shrink-0 items-center justify-end gap-3 border-b border-white/10 pb-4">
+        <ConnectWalletButton />
         <div className="flex items-center gap-2">
           <span
             className={[
@@ -81,6 +133,39 @@ export function LobbyPage() {
         </div>
       ) : null}
 
+      {!connected ? (
+        <div className="flex flex-col gap-3 rounded-2xl border border-emerald-500/30 bg-linear-to-br from-emerald-950/50 via-slate-900 to-slate-950 px-5 py-4 shadow-md shadow-emerald-950/30 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-white">
+              Connect your wallet to play paid matches
+            </p>
+            <p className="mt-0.5 text-xs text-slate-400">
+              You'll need a Solana wallet with $TOILET to host or join an arena. Demo mode stays open without one.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={connect}
+            className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl bg-linear-to-br from-emerald-400 to-emerald-600 px-4 py-2 text-sm font-bold text-white shadow-md shadow-emerald-900/30 transition hover:from-emerald-300 hover:to-emerald-500"
+          >
+            Connect Wallet
+          </button>
+        </div>
+      ) : null}
+
+      {walletError ? (
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+          <span>{walletError}</span>
+          <button
+            type="button"
+            onClick={() => setWalletError(null)}
+            className="shrink-0 text-red-300 underline-offset-2 hover:underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
       <section className="relative overflow-hidden rounded-3xl border border-white/10 bg-linear-to-br from-emerald-950/30 via-slate-900 to-slate-950 px-5 py-7 shadow-xl shadow-emerald-950/30 sm:px-8 sm:py-8">
         <div
           className="pointer-events-none absolute -right-20 -top-16 h-56 w-56 rounded-full bg-emerald-500/20 blur-3xl"
@@ -100,8 +185,9 @@ export function LobbyPage() {
           </div>
           <button
             type="button"
-            onClick={() => setCreateOpen(true)}
-            disabled={!wsReady}
+            onClick={openCreateDialog}
+            disabled={!wsReady || !connected}
+            title={!connected ? 'Connect your wallet first' : undefined}
             className="group inline-flex items-center gap-2 rounded-xl bg-linear-to-br from-emerald-400 to-emerald-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-900/40 ring-1 ring-emerald-400/40 transition hover:from-emerald-300 hover:to-emerald-500 hover:shadow-emerald-800/50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <span aria-hidden className="text-base leading-none">
@@ -155,8 +241,9 @@ export function LobbyPage() {
           </p>
           <button
             type="button"
-            onClick={() => setCreateOpen(true)}
-            disabled={!wsReady}
+            onClick={openCreateDialog}
+            disabled={!wsReady || !connected}
+            title={!connected ? 'Connect your wallet first' : undefined}
             className="mt-6 inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/30 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <span aria-hidden>+</span> Host the first room
@@ -165,7 +252,12 @@ export function LobbyPage() {
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
           {filtered.map((r) => (
-            <RoomCard key={r.id} room={r} />
+            <RoomCard
+              key={r.id}
+              room={r}
+              canJoin={connected}
+              onJoin={() => handleJoinRoom(r)}
+            />
           ))}
         </div>
       )}
@@ -311,7 +403,15 @@ function StakeChip({
   );
 }
 
-function RoomCard({ room }: { room: RoomSummary }) {
+function RoomCard({
+  room,
+  canJoin,
+  onJoin,
+}: {
+  room: RoomSummary;
+  canJoin: boolean;
+  onJoin: () => void;
+}) {
   const isFull = room.seatsFilled >= room.seatsTotal;
   return (
     <article className="group relative flex flex-col overflow-hidden rounded-2xl border border-slate-800/80 bg-linear-to-br from-slate-900/90 via-slate-900/60 to-slate-950/90 p-5 shadow-md shadow-black/20 transition hover:-translate-y-0.5 hover:border-emerald-500/40 hover:shadow-lg hover:shadow-emerald-900/20">
@@ -357,15 +457,18 @@ function RoomCard({ room }: { room: RoomSummary }) {
             Full
           </span>
         ) : (
-          <Link
-            to={`/room/${room.id}`}
-            className="inline-flex items-center gap-1 rounded-lg bg-white px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-900 shadow-md transition hover:bg-emerald-300 group-hover:bg-emerald-300"
+          <button
+            type="button"
+            onClick={onJoin}
+            disabled={!canJoin}
+            title={!canJoin ? 'Connect your wallet first' : undefined}
+            className="inline-flex items-center gap-1 rounded-lg bg-white px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-900 shadow-md transition hover:bg-emerald-300 group-hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500 disabled:shadow-none"
           >
             Join
             <span aria-hidden className="transition-transform group-hover:translate-x-0.5">
               →
             </span>
-          </Link>
+          </button>
         )}
       </footer>
     </article>

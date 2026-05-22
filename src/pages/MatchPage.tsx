@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { useGameRealtime } from '../contexts/GameRealtimeContext';
+import { useSettings } from '../contexts/SettingsContext';
 import { useMatchSession } from '../hooks/useMatchSession';
 import { PhaserGame } from '../game/PhaserGame';
 
@@ -16,7 +17,11 @@ export function MatchPage() {
     subscribeGameMessages,
     matchPlatforms,
     exitToLobby,
+    payoutStatus,
+    clearPayoutStatus,
+    matchExtendedMagPlayers,
   } = useGameRealtime();
+  const { settings } = useSettings();
   /** Hook still runs so the session-failure side effects fire; UI is hidden. */
   useMatchSession(matchId);
 
@@ -144,7 +149,7 @@ export function MatchPage() {
         </div>
       ) : null}
 
-      <div className="relative flex min-h-[600px] flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950">
+      <div className="relative flex flex-1 overflow-hidden bg-black">
         <PhaserGame
           isDemo={!isLiveMatch}
           matchId={matchId ?? ''}
@@ -153,12 +158,63 @@ export function MatchPage() {
           selfSeat={selfSeat}
           stakeSol={roomState?.stakeSol}
           platforms={matchPlatforms ?? undefined}
+          extendedMagPlayers={matchExtendedMagPlayers}
           paused={paused}
+          crosshairStyle={settings.crosshair}
+          showFps={settings.showFps}
           sendGameMessage={sendGameMessage}
           subscribeGameMessages={subscribeGameMessages}
           exitToLobby={exitToLobby}
           onPauseAllowedChange={onPauseAllowedChange}
         />
+        {isLiveMatch && payoutStatus ? (
+          <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-3">
+            <div
+              className={[
+                'pointer-events-auto flex max-w-md flex-col gap-2 rounded-2xl px-4 py-3 text-sm shadow-2xl backdrop-blur-md sm:flex-row sm:items-center',
+                payoutStatus.ok
+                  ? 'border border-emerald-400/40 bg-emerald-500/15 text-emerald-100'
+                  : 'border border-red-500/40 bg-red-500/15 text-red-100',
+              ].join(' ')}
+              role="status"
+            >
+              {payoutStatus.ok ? (
+                <>
+                  <div className="flex-1">
+                    <p className="font-bold">
+                      Payout received: {payoutStatus.amount.toLocaleString()} $TOILET
+                    </p>
+                    {payoutStatus.signature ? (
+                      <a
+                        href={`https://explorer.solana.com/tx/${payoutStatus.signature}?cluster=devnet`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-0.5 inline-block break-all text-xs text-emerald-300 underline-offset-2 hover:underline"
+                      >
+                        View transaction ↗
+                      </a>
+                    ) : null}
+                  </div>
+                </>
+              ) : (
+                <div className="flex-1">
+                  <p className="font-bold">Payout failed</p>
+                  <p className="mt-0.5 text-xs text-red-200">
+                    {payoutStatus.message ??
+                      'Treasury could not send your winnings. Contact support and reference your wallet address.'}
+                  </p>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={clearPayoutStatus}
+                className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-white/80 transition hover:bg-white/10 hover:text-white"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        ) : null}
         {paused ? (
           <div
             className="absolute inset-0 z-30 flex items-center justify-center bg-black/75 backdrop-blur-md"

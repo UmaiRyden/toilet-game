@@ -1,6 +1,8 @@
 import { Outlet } from 'react-router-dom';
 
-/** Full-screen “main menu” shell — no site chrome; optional back link off home. */
+import { ConnectWalletButton } from '../components/ConnectWalletButton';
+
+/** Full-screen “main menu” shell — top-right wallet connect; otherwise no site chrome. */
 export function HubMenuLayout() {
   return (
     <div className="relative min-h-dvh overflow-hidden bg-slate-950 text-slate-100">
@@ -9,6 +11,9 @@ export function HubMenuLayout() {
         aria-hidden
       />
       <div className="relative z-10 mx-auto flex min-h-dvh max-w-6xl flex-col px-4 py-6 sm:px-8 sm:py-10">
+        <header className="mb-6 flex shrink-0 items-center justify-end">
+          <ConnectWalletButton />
+        </header>
         <Outlet />
       </div>
     </div>

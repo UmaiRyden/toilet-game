@@ -2,8 +2,17 @@ import type { RoomSummary } from '../types/realtime';
 
 export type { RoomSummary };
 
+/**
+ * Resolves the REST API base URL.
+ *
+ * Priority:
+ *   1. `VITE_BACKEND_ORIGIN` — explicit override (set in .env per environment).
+ *   2. Same-origin — empty string, so paths are passed through unchanged and
+ *      the Vite dev proxy (or a same-origin prod deploy) forwards them.
+ */
 export function getApiBaseUrl(): string {
-  return 'https://toilet-game-production-3e7a.up.railway.app';
+  const fromEnv = import.meta.env.VITE_BACKEND_ORIGIN?.trim();
+  return fromEnv || '';
 }
 
 /** Absolute path on `getApiBaseUrl()` or relative to the current origin when base is empty. */

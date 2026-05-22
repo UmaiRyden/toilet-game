@@ -1,7 +1,18 @@
-node_modules
+# Environment
+.env
+.env.local
+.env.*
+!.env.example
+
+# Sensitive scripts output
+scripts/treasury-keypair.json
+scripts/token-info.json
+
+# Dependencies
+node_modules/
+server/node_modules/
+
+# Build output
 dist
 .DS_Store
 *.log
-.env
-.env.*
-!.env.example

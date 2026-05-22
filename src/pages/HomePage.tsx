@@ -2,9 +2,11 @@ import { Link } from 'react-router-dom';
 
 export function HomePage() {
   return (
-    <div className="flex flex-1 flex-col gap-12 sm:gap-16">
+    <div className="flex flex-1 flex-col">
+      {/* Vertically centered content block */}
+      <div className="flex flex-1 flex-col justify-center gap-10 sm:gap-12 lg:gap-8">
       {/* Hero */}
-      <header className="flex flex-1 flex-col items-center justify-center pt-6 text-center sm:items-start sm:pt-12 sm:text-left">
+      <header className="flex flex-col items-center text-center sm:items-start sm:text-left">
         <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.3em] text-emerald-300/90 ring-1 ring-emerald-500/20">
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
           2D PvP arena
@@ -12,7 +14,7 @@ export function HomePage() {
         <div className="mt-6 flex items-center gap-6">
           <img
             src="/assets/characters/soldier.png"
-            className="h-32 w-32 shrink-0 object-contain"
+            className="h-32 w-32 shrink-0 object-contain lg:h-40 lg:w-40"
             alt=""
             draggable={false}
           />
@@ -30,7 +32,7 @@ export function HomePage() {
         <h2 className="mb-4 text-[11px] font-bold uppercase tracking-[0.3em] text-slate-500">
           Choose your mode
         </h2>
-        <div className="grid gap-5 md:grid-cols-2">
+        <div className="grid w-full max-w-4xl gap-5 md:grid-cols-2">
           <Link
             to="/lobby"
             className="group relative isolate flex flex-col overflow-hidden rounded-3xl border border-emerald-500/30 bg-linear-to-br from-emerald-950/40 via-slate-900 to-slate-950 p-6 shadow-xl shadow-emerald-950/40 transition hover:-translate-y-0.5 hover:border-emerald-400/60 hover:shadow-emerald-900/50 sm:p-8"
@@ -104,9 +106,10 @@ export function HomePage() {
           </Link>
         </div>
       </section>
+      </div>{/* end centered content block */}
 
       {/* Meta links */}
-      <nav className="mt-auto flex flex-wrap items-center gap-2 border-t border-white/5 pt-6">
+      <nav className="flex flex-wrap items-center gap-2 border-t border-white/5 pt-6">
         {[
           { to: '/leaderboard', label: 'Leaderboard' },
           { to: '/settings', label: 'Settings' },

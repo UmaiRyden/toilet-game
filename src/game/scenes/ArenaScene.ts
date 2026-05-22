@@ -1,6 +1,21 @@
 import Phaser from 'phaser';
 
+import type { CrosshairStyle } from '../../contexts/SettingsContext';
 import type { PlatformSpec } from '../../types/realtime';
+
+/**
+ * Fixed internal world dimensions. Every client renders the same 1280×720
+ * world; Phaser's Scale.FIT then scales the canvas uniformly to fit the
+ * available container space. All gameplay coordinates (spawns, platforms,
+ * physics, HUD) are expressed in this fixed pixel space so the two clients
+ * see identical positions regardless of screen size.
+ */
+export const WORLD_WIDTH = 1280;
+export const WORLD_HEIGHT = 720;
+
+/** Fixed spawn columns inside the 1280-wide world. */
+const SPAWN_X_SEAT_0 = 200;
+const SPAWN_X_SEAT_1 = 1080;
 
 const GROUND_HEIGHT = 56;
 
@@ -55,6 +70,7 @@ const MUZZLE_OFFSET = 30;
 const BULLET_DAMAGE = 10;
 
 const MAG_SIZE = 10;
+const EXTENDED_MAG_SIZE = 20;
 const RELOAD_MS = 1500;
 
 const MAX_HEALTH = 100;
@@ -124,6 +140,12 @@ export interface ArenaSceneInitData {
   selfSeat: number;
   stakeSol?: number;
   platforms?: PlatformSpec[];
+  /** Player IDs that purchased the 20-round magazine upgrade for this match. */
+  extendedMagPlayers?: string[];
+  /** Initial reticle style — can be changed at runtime via applyCrosshairStyle. */
+  crosshairStyle?: CrosshairStyle;
+  /** Initial FPS overlay toggle — can be changed at runtime via applyShowFps. */
+  showFps?: boolean;
   sendGameMessage: (payload: Record<string, unknown>) => void;
   subscribeGameMessages: (handler: (msg: GameMessage) => void) => () => void;
   exitToLobby: () => void;
@@ -160,6 +182,12 @@ export class ArenaScene extends Phaser.Scene {
   private selfNameText!: Phaser.GameObjects.Text;
   private enemyNameText!: Phaser.GameObjects.Text;
   private roundScoreText!: Phaser.GameObjects.Text;
+  /** Optional FPS overlay — created lazily when showFps flips on. */
+  private fpsText?: Phaser.GameObjects.Text;
+
+  /** Settings (initial values come from init data; can change at runtime via apply* methods). */
+  private crosshairStyle: CrosshairStyle = 'cross';
+  private showFps = false;
 
   /** Controls. */
   private cursors!: CursorKeys;
@@ -170,13 +198,14 @@ export class ArenaScene extends Phaser.Scene {
 
   /** Game state. */
   private ammo = MAG_SIZE;
+  /** Magazine size for the local player — bumped to EXTENDED_MAG_SIZE if they purchased the upgrade. */
+  private playerMagSize = MAG_SIZE;
   private reloading = false;
   private playerHealth = MAX_HEALTH;
   private enemyHealth = MAX_HEALTH;
   private matchOver = false;
   private inInterRound = false;
   private interRoundGroup?: Phaser.GameObjects.Container;
-  private resultGroup?: Phaser.GameObjects.Container;
   private resultActionContainer?: Phaser.GameObjects.Container;
 
   /** Round bookkeeping (best of 3). */
@@ -242,18 +271,28 @@ export class ArenaScene extends Phaser.Scene {
     /** Seed to the opposite so the first notifyPauseAllowed in create() always fires. */
     this.lastPauseAllowed = false;
 
+    /** User-tunable settings — defaults are preserved if init data is missing them. */
+    this.crosshairStyle = data?.crosshairStyle ?? 'cross';
+    this.showFps = data?.showFps ?? false;
+
     /** Seat 0 wears cyan, seat 1 wears orange — both clients agree on team colors. */
     this.playerPalette = this.selfSeat === 0 ? CYAN_PALETTE : ORANGE_PALETTE;
     this.enemyPalette = this.selfSeat === 0 ? ORANGE_PALETTE : CYAN_PALETTE;
 
-    this.ammo = MAG_SIZE;
+    /** Local-player mag upgrade — empty list in demo means everyone is on the default 10-round mag. */
+    const extendedMag = data?.extendedMagPlayers ?? [];
+    this.playerMagSize =
+      this.selfPlayerId && extendedMag.includes(this.selfPlayerId)
+        ? EXTENDED_MAG_SIZE
+        : MAG_SIZE;
+
+    this.ammo = this.playerMagSize;
     this.reloading = false;
     this.playerHealth = MAX_HEALTH;
     this.enemyHealth = MAX_HEALTH;
     this.matchOver = false;
     this.inInterRound = false;
     this.interRoundGroup = undefined;
-    this.resultGroup = undefined;
     this.resultActionContainer = undefined;
     this.lastUpdateSentAt = 0;
     this.enemyTarget = null;
@@ -341,7 +380,8 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   create(): void {
-    const { width, height } = this.scale.gameSize;
+    const width = WORLD_WIDTH;
+    const height = WORLD_HEIGHT;
     this.cameras.main.setBackgroundColor(0x000000);
     this.physics.world.setBounds(0, 0, width, height);
 
@@ -366,7 +406,6 @@ export class ArenaScene extends Phaser.Scene {
       this.unsubscribeGame = this.subscribeGameMessages((msg) => this.handleGameMessage(msg));
     }
 
-    this.scale.on('resize', this.handleResize, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.cleanup, this);
 
     /** Seed the host with the initial pause-allowed value for this scene instance. */
@@ -398,6 +437,7 @@ export class ArenaScene extends Phaser.Scene {
     }
     this.cullBullets(this.playerBullets);
     this.cullBullets(this.enemyBullets);
+    this.updateFpsOverlay();
     this.maybeSendGameUpdate();
   }
 
@@ -486,11 +526,8 @@ export class ArenaScene extends Phaser.Scene {
   /* Characters                                                          */
   /* ------------------------------------------------------------------ */
 
-  private createPlayer(width: number, height: number): void {
-    const startX =
-      this.selfSeat === 0
-        ? Math.max(80, width * 0.18)
-        : Math.min(width - 80, width * 0.82);
+  private createPlayer(_width: number, height: number): void {
+    const startX = this.selfSeat === 0 ? SPAWN_X_SEAT_0 : SPAWN_X_SEAT_1;
     const startY = height - GROUND_HEIGHT - PLAYER_HEIGHT / 2 - 8;
     /** Physics anchor — rendered as alpha 0 so visual layer can take over. */
     this.player = this.add.rectangle(startX, startY, PLAYER_WIDTH, PLAYER_HEIGHT, 0x000000, 0);
@@ -500,11 +537,8 @@ export class ArenaScene extends Phaser.Scene {
     body.setMaxVelocity(PLAYER_SPEED, 1200);
   }
 
-  private createEnemy(width: number, height: number): void {
-    const startX =
-      this.selfSeat === 0
-        ? Math.min(width - 80, width * 0.82)
-        : Math.max(80, width * 0.18);
+  private createEnemy(_width: number, height: number): void {
+    const startX = this.selfSeat === 0 ? SPAWN_X_SEAT_1 : SPAWN_X_SEAT_0;
     const startY = height - GROUND_HEIGHT - PLAYER_HEIGHT / 2 - 8;
     this.enemy = this.add.rectangle(startX, startY, PLAYER_WIDTH, PLAYER_HEIGHT, 0x000000, 0);
     this.physics.add.existing(this.enemy);
@@ -757,9 +791,9 @@ export class ArenaScene extends Phaser.Scene {
         if (this.matchOver) return;
         const rect = canvas.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) return;
-        const { width, height } = this.scale.gameSize;
-        const wx = ((event.clientX - rect.left) / rect.width) * width;
-        const wy = ((event.clientY - rect.top) / rect.height) * height;
+        /** Map screen-space click into the fixed 1280×720 world coordinates. */
+        const wx = ((event.clientX - rect.left) / rect.width) * WORLD_WIDTH;
+        const wy = ((event.clientY - rect.top) / rect.height) * WORLD_HEIGHT;
         this.pendingShot = { x: wx, y: wy };
       };
       canvas.addEventListener('mousedown', this.nativeMouseDownHandler, { capture: true });
@@ -1138,7 +1172,7 @@ export class ArenaScene extends Phaser.Scene {
     this.enemyBullets.clear(true, true);
     this.playerHealth = MAX_HEALTH;
     this.enemyHealth = MAX_HEALTH;
-    this.ammo = MAG_SIZE;
+    this.ammo = this.playerMagSize;
     this.reloading = false;
     this.updateAmmoText();
     this.updateRoundScoreText();
@@ -1157,7 +1191,8 @@ export class ArenaScene extends Phaser.Scene {
       this.interRoundGroup.destroy();
       this.interRoundGroup = undefined;
     }
-    const { width, height } = this.scale.gameSize;
+    const width = WORLD_WIDTH;
+    const height = WORLD_HEIGHT;
     const backdrop = this.add.rectangle(width / 2, height / 2, width, height, 0x000509, 0.55);
     const title = this.add
       .text(width / 2, height / 2, `ROUND ${this.roundNumber}`, {
@@ -1195,23 +1230,16 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private resetPlayerPositions(): void {
-    const { width, height } = this.scale.gameSize;
-    const floorY = height - GROUND_HEIGHT - PLAYER_HEIGHT / 2 - 8;
+    const floorY = WORLD_HEIGHT - GROUND_HEIGHT - PLAYER_HEIGHT / 2 - 8;
 
-    const selfX =
-      this.selfSeat === 0
-        ? Math.max(80, width * 0.18)
-        : Math.min(width - 80, width * 0.82);
+    const selfX = this.selfSeat === 0 ? SPAWN_X_SEAT_0 : SPAWN_X_SEAT_1;
     this.player.setPosition(selfX, floorY);
     const pBody = this.player.body as Phaser.Physics.Arcade.Body | null;
     pBody?.reset(selfX, floorY);
     this.jumpsUsed = 0;
 
     if (this.isDemo) {
-      const enemyX =
-        this.selfSeat === 0
-          ? Math.min(width - 80, width * 0.82)
-          : Math.max(80, width * 0.18);
+      const enemyX = this.selfSeat === 0 ? SPAWN_X_SEAT_1 : SPAWN_X_SEAT_0;
       this.enemy.setPosition(enemyX, floorY);
       (this.enemy.body as Phaser.Physics.Arcade.Body | null)?.reset(enemyX, floorY);
       this.aiAmmo = MAG_SIZE;
@@ -1224,7 +1252,8 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private cullBullets(group: Phaser.Physics.Arcade.Group): void {
-    const { width, height } = this.scale.gameSize;
+    const width = WORLD_WIDTH;
+    const height = WORLD_HEIGHT;
     group.getChildren().forEach((child) => {
       const bullet = child as Phaser.GameObjects.Rectangle;
       if (
@@ -1247,14 +1276,14 @@ export class ArenaScene extends Phaser.Scene {
     this.reloading = true;
     this.updateAmmoText();
     this.time.delayedCall(RELOAD_MS, () => {
-      this.ammo = MAG_SIZE;
+      this.ammo = this.playerMagSize;
       this.reloading = false;
       this.updateAmmoText();
     });
   }
 
   private createHud(width: number): void {
-    /** Top banner. */
+    /** Top banner — wider for live matches so STAKE + POT fits without truncation. */
     const bannerLabel = this.bannerLabelText();
     this.bannerBg = this.add.rectangle(width / 2, 18, 240, 24, 0x0f172a, 0.78);
     this.bannerBg.setStrokeStyle(1, 0x1e293b);
@@ -1268,6 +1297,8 @@ export class ArenaScene extends Phaser.Scene {
     this.bannerText.setLetterSpacing(3);
     this.bannerText.setOrigin(0.5);
     this.bannerText.setDepth(15);
+    /** Resize after the text is laid out so the bg always wraps the label snugly. */
+    this.bannerBg.setSize(Math.max(180, this.bannerText.width + 32), 24);
 
     /** Round score (top-left): "self — enemy". */
     this.roundScoreText = this.add.text(20, 14, '', {
@@ -1346,7 +1377,7 @@ export class ArenaScene extends Phaser.Scene {
       this.ammoText.setColor('#fbbf24');
       this.ammoLabel.setText('RELOADING');
     } else {
-      this.ammoText.setText(`${this.ammo}/${MAG_SIZE}`);
+      this.ammoText.setText(`${this.ammo}/${this.playerMagSize}`);
       this.ammoText.setColor(this.ammo <= 3 ? '#f87171' : '#e2e8f0');
       this.ammoLabel.setText('AMMO');
     }
@@ -1371,7 +1402,9 @@ export class ArenaScene extends Phaser.Scene {
   private bannerLabelText(): string {
     if (this.isDemo) return 'DEMO MATCH';
     if (typeof this.stakeSol === 'number' && this.stakeSol > 0) {
-      return `STAKE  ${this.stakeSol.toLocaleString()} $TOILET`;
+      const stake = this.stakeSol.toLocaleString();
+      const pot = (this.stakeSol * 2).toLocaleString();
+      return `STAKE  ${stake} $TOILET   •   POT  ${pot} $TOILET`;
     }
     return 'LIVE MATCH';
   }
@@ -1436,21 +1469,90 @@ export class ArenaScene extends Phaser.Scene {
   private drawCrosshair(x: number, y: number): void {
     this.crosshair.clear();
     this.input.setDefaultCursor('none');
-    this.crosshair.lineStyle(1.5, this.playerPalette.body, 0.85);
-    this.crosshair.strokeCircle(x, y, 10);
-    this.crosshair.lineStyle(1, 0xf8fafc, 0.9);
-    this.crosshair.beginPath();
-    this.crosshair.moveTo(x - 14, y);
-    this.crosshair.lineTo(x - 5, y);
-    this.crosshair.moveTo(x + 5, y);
-    this.crosshair.lineTo(x + 14, y);
-    this.crosshair.moveTo(x, y - 14);
-    this.crosshair.lineTo(x, y - 5);
-    this.crosshair.moveTo(x, y + 5);
-    this.crosshair.lineTo(x, y + 14);
-    this.crosshair.strokePath();
-    this.crosshair.fillStyle(0xf8fafc, 0.9);
-    this.crosshair.fillCircle(x, y, 1.2);
+    switch (this.crosshairStyle) {
+      case 'dot':
+        /** Solid filled circle — minimal, useful for high-precision aim. */
+        this.crosshair.fillStyle(this.playerPalette.body, 0.95);
+        this.crosshair.fillCircle(x, y, 3);
+        this.crosshair.fillStyle(0xffffff, 0.9);
+        this.crosshair.fillCircle(x, y, 1.2);
+        break;
+      case 'circle':
+        /** Ring outline + center dot — easy to see against busy backgrounds. */
+        this.crosshair.lineStyle(2, this.playerPalette.body, 0.9);
+        this.crosshair.strokeCircle(x, y, 12);
+        this.crosshair.lineStyle(1, 0xffffff, 0.6);
+        this.crosshair.strokeCircle(x, y, 12);
+        this.crosshair.fillStyle(0xf8fafc, 0.9);
+        this.crosshair.fillCircle(x, y, 1.4);
+        break;
+      case 'cross':
+      default:
+        /** Classic four-line cross with a small center ring. */
+        this.crosshair.lineStyle(1.5, this.playerPalette.body, 0.85);
+        this.crosshair.strokeCircle(x, y, 10);
+        this.crosshair.lineStyle(1, 0xf8fafc, 0.9);
+        this.crosshair.beginPath();
+        this.crosshair.moveTo(x - 14, y);
+        this.crosshair.lineTo(x - 5, y);
+        this.crosshair.moveTo(x + 5, y);
+        this.crosshair.lineTo(x + 14, y);
+        this.crosshair.moveTo(x, y - 14);
+        this.crosshair.lineTo(x, y - 5);
+        this.crosshair.moveTo(x, y + 5);
+        this.crosshair.lineTo(x, y + 14);
+        this.crosshair.strokePath();
+        this.crosshair.fillStyle(0xf8fafc, 0.9);
+        this.crosshair.fillCircle(x, y, 1.2);
+        break;
+    }
+  }
+
+  /**
+   * Public hooks for the React host to push live setting changes mid-match.
+   * Called from PhaserGame's settings-sync effect.
+   */
+  applyCrosshairStyle(style: CrosshairStyle): void {
+    this.crosshairStyle = style;
+  }
+
+  applyShowFps(value: boolean): void {
+    this.showFps = value;
+    if (!value && this.fpsText) {
+      this.fpsText.destroy();
+      this.fpsText = undefined;
+    }
+  }
+
+  private ensureFpsText(): Phaser.GameObjects.Text {
+    if (!this.fpsText) {
+      this.fpsText = this.add
+        .text(WORLD_WIDTH - 18, WORLD_HEIGHT - 18, '', {
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          fontSize: '12px',
+          fontStyle: 'bold',
+          color: '#94a3b8',
+          backgroundColor: 'rgba(15, 23, 42, 0.55)',
+          padding: { left: 6, right: 6, top: 2, bottom: 2 },
+        })
+        .setOrigin(1, 1)
+        .setDepth(25)
+        .setScrollFactor(0);
+    }
+    return this.fpsText;
+  }
+
+  private updateFpsOverlay(): void {
+    if (!this.showFps) {
+      if (this.fpsText) {
+        this.fpsText.destroy();
+        this.fpsText = undefined;
+      }
+      return;
+    }
+    const text = this.ensureFpsText();
+    const fps = Math.round(this.game.loop.actualFps);
+    text.setText(`${fps} FPS`);
   }
 
   /* ------------------------------------------------------------------ */
@@ -1473,7 +1575,8 @@ export class ArenaScene extends Phaser.Scene {
     this.playerBullets.clear(true, true);
     this.enemyBullets.clear(true, true);
 
-    const { width, height } = this.scale.gameSize;
+    const width = WORLD_WIDTH;
+    const height = WORLD_HEIGHT;
     const accuracy =
       this.shotsFired > 0 ? Math.round((100 * this.shotsHit) / this.shotsFired) : 0;
     const remaining = Math.max(0, Math.round(this.playerHealth));
@@ -1527,7 +1630,7 @@ export class ArenaScene extends Phaser.Scene {
     const actionContainer = this.add.container(width / 2, height / 2 + 110);
 
     this.resultActionContainer = actionContainer;
-    this.resultGroup = this.add
+    this.add
       .container(0, 0, [backdrop, title, subtitle, statsBg, statsText, actionContainer])
       .setDepth(30);
 
@@ -1617,7 +1720,8 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private spawnConfetti(): void {
-    const { width, height } = this.scale.gameSize;
+    const width = WORLD_WIDTH;
+    const height = WORLD_HEIGHT;
     const colors = [0x22d3ee, 0xfacc15, 0xa855f7, 0xf472b6, 0x34d399, 0xfb923c];
     for (let i = 0; i < 80; i++) {
       this.time.delayedCall(Math.random() * 900, () => {
@@ -1651,7 +1755,8 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private spawnSparks(): void {
-    const { width, height } = this.scale.gameSize;
+    const width = WORLD_WIDTH;
+    const height = WORLD_HEIGHT;
     for (let i = 0; i < 24; i++) {
       this.time.delayedCall(Math.random() * 400, () => {
         if (!this.scene.isActive()) return;
@@ -1675,129 +1780,10 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   /* ------------------------------------------------------------------ */
-  /* Resize + cleanup                                                     */
+  /* Cleanup                                                              */
   /* ------------------------------------------------------------------ */
 
-  private handleResize = (gameSize: Phaser.Structs.Size): void => {
-    const { width, height } = gameSize;
-    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-      return;
-    }
-
-    /** Physics world + camera must agree on the new bounds — RESIZE updates the viewport but not setBounds. */
-    this.physics.world.setBounds(0, 0, width, height);
-    const camera = this.cameras.main;
-    if (camera) {
-      camera.setSize(width, height);
-      camera.setBounds(0, 0, width, height);
-    }
-
-    /** Background image — re-cover the new canvas extents. */
-    this.fitBackground(width, height);
-
-    /** Ground physics rectangle still tracks the new floor (invisible). */
-    if (this.ground) {
-      this.ground.setPosition(width / 2, height - GROUND_HEIGHT / 2);
-      this.ground.setSize(width, GROUND_HEIGHT);
-      (this.ground.body as Phaser.Physics.Arcade.StaticBody | null)?.updateFromGameObject();
-    }
-
-    /** Platforms — reposition by fraction, refresh static bodies. */
-    const platChildren = this.platforms?.getChildren() as
-      | Phaser.GameObjects.Rectangle[]
-      | undefined;
-    if (platChildren) {
-      platChildren.forEach((plat, idx) => {
-        const spec = this.platformSpecs[idx];
-        if (!spec) return;
-        const w = Math.max(60, spec.wFraction * width);
-        plat.setSize(w, PLATFORM_HEIGHT);
-        plat.setPosition(spec.xFraction * width, this.platformCenterY(height, spec));
-        (plat.body as Phaser.Physics.Arcade.StaticBody | null)?.updateFromGameObject();
-      });
-    }
-    this.drawPlatforms();
-
-    /** Player / enemy clamping into the new bounds. */
-    const floorY = height - GROUND_HEIGHT - PLAYER_HEIGHT / 2;
-    if (this.player) {
-      const clampedX = Phaser.Math.Clamp(
-        this.player.x,
-        PLAYER_WIDTH / 2,
-        Math.max(PLAYER_WIDTH / 2, width - PLAYER_WIDTH / 2),
-      );
-      const forcedToFloor = this.player.y > floorY;
-      const clampedY = forcedToFloor ? floorY : this.player.y;
-      if (clampedX !== this.player.x || clampedY !== this.player.y) {
-        this.player.setPosition(clampedX, clampedY);
-        const pBody = this.player.body as Phaser.Physics.Arcade.Body | null;
-        if (pBody) {
-          if (forcedToFloor) {
-            /** Reset clears velocity — appropriate for a hard teleport onto the new floor. */
-            pBody.reset(clampedX, clampedY);
-          } else {
-            pBody.position.x = clampedX - pBody.halfWidth;
-            pBody.position.y = clampedY - pBody.halfHeight;
-          }
-        }
-      }
-    }
-    if (this.enemy) {
-      const clampedX = Phaser.Math.Clamp(
-        this.enemy.x,
-        PLAYER_WIDTH / 2,
-        Math.max(PLAYER_WIDTH / 2, width - PLAYER_WIDTH / 2),
-      );
-      /** Demo enemy is anchored to the floor; live enemy is driven by lerpEnemy so just clamp out of bounds. */
-      const clampedY = this.isDemo ? floorY : Math.min(this.enemy.y, floorY);
-      this.enemy.setPosition(clampedX, clampedY);
-      (this.enemy.body as Phaser.Physics.Arcade.Body | null)?.reset(clampedX, clampedY);
-    }
-
-    /** HUD. */
-    if (this.bannerBg) this.bannerBg.setPosition(width / 2, 18);
-    if (this.bannerText) this.bannerText.setPosition(width / 2, 18);
-    if (this.roundScoreText) this.roundScoreText.setPosition(20, 14);
-    if (this.ammoText) {
-      this.ammoText.setPosition(width - 18, 44);
-      this.ammoLabel.setPosition(width - 18, 68);
-      this.repositionAmmoIcon();
-    }
-
-    /** Inter-round overlay (if showing). */
-    if (this.interRoundGroup) {
-      const list = this.interRoundGroup.list as Phaser.GameObjects.GameObject[];
-      const [backdrop, title] = list as [Phaser.GameObjects.Rectangle, Phaser.GameObjects.Text];
-      if (backdrop) {
-        backdrop.setPosition(width / 2, height / 2);
-        backdrop.setSize(width, height);
-      }
-      if (title) title.setPosition(width / 2, height / 2);
-    }
-
-    /** Result overlay (if showing). */
-    if (this.resultGroup) {
-      const list = this.resultGroup.list as Phaser.GameObjects.GameObject[];
-      const [backdrop, title, subtitle, statsBg, statsText, action] = list as [
-        Phaser.GameObjects.Rectangle,
-        Phaser.GameObjects.Text,
-        Phaser.GameObjects.Text,
-        Phaser.GameObjects.Rectangle,
-        Phaser.GameObjects.Text,
-        Phaser.GameObjects.Container | undefined,
-      ];
-      backdrop.setPosition(width / 2, height / 2);
-      backdrop.setSize(width, height);
-      title.setPosition(width / 2, height / 2 - 110);
-      subtitle.setPosition(width / 2, height / 2 - 56);
-      statsBg.setPosition(width / 2, height / 2 + 10);
-      statsText.setPosition(width / 2, height / 2 + 10);
-      if (action) action.setPosition(width / 2, height / 2 + 110);
-    }
-  };
-
   private cleanup = (): void => {
-    this.scale.off('resize', this.handleResize, this);
     this.input.setDefaultCursor('default');
     this.unsubscribeGame?.();
     this.unsubscribeGame = undefined;

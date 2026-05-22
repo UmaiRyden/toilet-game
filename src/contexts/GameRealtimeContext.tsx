@@ -14,7 +14,16 @@ import { getClientSessionId } from '../lib/clientSession';
 import { getRealtimeWsUrl } from '../lib/realtime';
 import { clearActiveMatchId, setActiveMatchId } from '../lib/matchSession';
 import { clearActiveRoomId, setActiveRoomId } from '../lib/roomSession';
-import type { PlatformSpec, RoomPlayer, RoomStatePayload } from '../types/realtime';
+import { useWallet } from '../hooks/useWallet';
+import type {
+  ExtendedMagMap,
+  PayoutStatus,
+  PlatformSpec,
+  RoomPlayer,
+  RoomStatePayload,
+  StakeStatusMap,
+  StakeStatusValue,
+} from '../types/realtime';
 
 const ROOM_JOIN_ERRORS = new Set(['ROOM_NOT_FOUND', 'ROOM_FULL', 'NOT_IN_ROOM']);
 
@@ -45,6 +54,24 @@ type GameRealtimeContextValue = {
   subscribeGameMessages: (handler: (msg: GameMessage) => void) => () => void;
   /** Server-shared platform layout for the active match (null in demo / between matches). */
   matchPlatforms: PlatformSpec[] | null;
+  /** Latest payout result from the server (null until the active match resolves). */
+  payoutStatus: PayoutStatus | null;
+  /** Clears the locally-cached payout status (e.g. when the user dismisses the banner). */
+  clearPayoutStatus: () => void;
+  /** Report a confirmed on-chain stake transfer to the server. */
+  sendStakePaid: (txSignature: string) => void;
+  /** Tell the server we couldn't / wouldn't pay our stake — server cancels the match. */
+  sendStakeFailed: (reason?: string) => void;
+  /** Server-reported cancellation reason for the most recent stake_pending attempt. */
+  matchCancelledReason: string | null;
+  /** Refund signature the server sent if our stake was refunded after a cancel. */
+  stakeRefund: { amount: number; signature: string | null; reason: string } | null;
+  /** Clears the cancellation / refund banners (e.g. after the user dismisses them). */
+  clearStakeBanners: () => void;
+  /** Player IDs that purchased the 20-round mag upgrade for the active match. */
+  matchExtendedMagPlayers: string[];
+  /** Report a confirmed extended-mag fee transfer to the server for verification. */
+  sendPurchaseExtendedMag: (txSignature: string) => void;
 };
 
 function parsePlatforms(raw: unknown): PlatformSpec[] | null {
@@ -67,6 +94,8 @@ const GameRealtimeContext = createContext<GameRealtimeContextValue | null>(null)
 export function GameRealtimeProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const { publicKey } = useWallet();
+  const walletAddress = publicKey?.toBase58() ?? null;
 
   const wsRef = useRef<WebSocket | null>(null);
   const roomStateRef = useRef<RoomStatePayload | null>(null);
@@ -75,14 +104,54 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
   const navigatingToMatchRef = useRef(false);
   const gameListenersRef = useRef<Set<(msg: GameMessage) => void>>(new Set());
   const matchResolvedNavTimerRef = useRef<number | null>(null);
+  /** Latest wallet address mirrored into a ref so ws.onopen can read it. */
+  const walletAddressRef = useRef<string | null>(null);
+  walletAddressRef.current = walletAddress;
 
   const [playerId, setPlayerId] = useState<string | null>(null);
   const [roomState, setRoomState] = useState<RoomStatePayload | null>(null);
   const [socketStatus, setSocketStatus] = useState<'connecting' | 'open' | 'closed'>('closed');
   const [protocolError, setProtocolError] = useState<string | null>(null);
   const [matchPlatforms, setMatchPlatforms] = useState<PlatformSpec[] | null>(null);
+  const [payoutStatus, setPayoutStatus] = useState<PayoutStatus | null>(null);
+  const [matchCancelledReason, setMatchCancelledReason] = useState<string | null>(
+    null,
+  );
+  const [stakeRefund, setStakeRefund] = useState<
+    { amount: number; signature: string | null; reason: string } | null
+  >(null);
+  const [matchExtendedMagPlayers, setMatchExtendedMagPlayers] = useState<string[]>([]);
 
   roomStateRef.current = roomState;
+
+  const clearPayoutStatus = useCallback(() => setPayoutStatus(null), []);
+  const clearStakeBanners = useCallback(() => {
+    setMatchCancelledReason(null);
+    setStakeRefund(null);
+  }, []);
+
+  const sendStakePaid = useCallback((txSignature: string) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'stake_paid', txSignature }));
+  }, []);
+
+  const sendStakeFailed = useCallback((reason?: string) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(
+      JSON.stringify({
+        type: 'stake_failed',
+        reason: reason ?? 'client_cancel',
+      }),
+    );
+  }, []);
+
+  const sendPurchaseExtendedMag = useCallback((txSignature: string) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'purchase_extended_mag', txSignature }));
+  }, []);
 
   const exitToLobby = useCallback(() => {
     clearActiveRoomId();
@@ -195,6 +264,13 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
 
     ws.onopen = () => {
       setSocketStatus('open');
+      /** Set wallet before join so the server's payout snapshot has it from the start. */
+      ws.send(
+        JSON.stringify({
+          type: 'set_wallet_address',
+          walletAddress: walletAddressRef.current ?? null,
+        }),
+      );
       ws.send(JSON.stringify({ type: 'join_room', roomId, clientSessionId: getClientSessionId() }));
     };
     ws.onclose = () => {
@@ -234,6 +310,41 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
         if (rid && self) {
           setActiveRoomId(rid);
         }
+        /** Diagnostic logging — trace exactly what the server sent and what we picked out. */
+        console.log(
+          `[diag room_state RX] roomId=${rid} phase=${msg.phase} stakeStatus=${
+            msg.stakeStatus
+              ? `present(${JSON.stringify(msg.stakeStatus)})`
+              : 'ABSENT'
+          } stakePendingEndsAt=${msg.stakePendingEndsAt ?? 'null'} extendedMag=${
+            msg.extendedMag ? JSON.stringify(msg.extendedMag) : 'ABSENT'
+          }`,
+        );
+        /** Normalize stake fields — the server only sends them while phase is stake_pending. */
+        const rawStatus = msg.stakeStatus;
+        let stakeStatus: StakeStatusMap | null = null;
+        if (rawStatus && typeof rawStatus === 'object') {
+          const out: StakeStatusMap = {};
+          for (const [pid, v] of Object.entries(rawStatus as Record<string, unknown>)) {
+            if (v === 'pending' || v === 'paid' || v === 'failed') {
+              out[pid] = v as StakeStatusValue;
+            }
+          }
+          stakeStatus = out;
+        }
+        const stakePendingEndsAt =
+          typeof msg.stakePendingEndsAt === 'number'
+            ? msg.stakePendingEndsAt
+            : null;
+        const rawExt = msg.extendedMag;
+        let extendedMag: ExtendedMagMap | null = null;
+        if (rawExt && typeof rawExt === 'object') {
+          const out: ExtendedMagMap = {};
+          for (const [pid, v] of Object.entries(rawExt as Record<string, unknown>)) {
+            out[pid] = Boolean(v);
+          }
+          extendedMag = out;
+        }
         setRoomState({
           roomId: rid || (typeof msg.roomId === 'string' ? msg.roomId.trim() : ''),
           stakeSol: Number(msg.stakeSol),
@@ -242,6 +353,9 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
           countdownEndsAt:
             typeof msg.countdownEndsAt === 'number' ? msg.countdownEndsAt : null,
           selfPlayerId: self || undefined,
+          stakeStatus,
+          stakePendingEndsAt,
+          extendedMag,
         });
       }
 
@@ -255,12 +369,73 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
             window.clearTimeout(matchResolvedNavTimerRef.current);
             matchResolvedNavTimerRef.current = null;
           }
+          /** Fresh match — clear any banner from the previous one. */
+          setPayoutStatus(null);
+          setMatchCancelledReason(null);
+          setStakeRefund(null);
+          const extMag = Array.isArray(msg.extendedMagPlayers)
+            ? (msg.extendedMagPlayers as unknown[]).filter(
+                (v): v is string => typeof v === 'string',
+              )
+            : [];
+          setMatchExtendedMagPlayers(extMag);
           navigatingToMatchRef.current = true;
           clearActiveRoomId();
           setActiveMatchId(mid);
           setMatchPlatforms(platforms);
           navigate(`/match/${encodeURIComponent(mid)}`, { state: rid ? { roomId: rid } : undefined });
         }
+      }
+
+      if (type === 'payout_complete') {
+        setPayoutStatus({
+          matchId: String(msg.matchId ?? ''),
+          ok: true,
+          amount: Number(msg.amount) || 0,
+          reason: typeof msg.reason === 'string' ? msg.reason : undefined,
+          signature:
+            typeof msg.signature === 'string' ? msg.signature : undefined,
+          recipientWallet:
+            typeof msg.recipientWallet === 'string'
+              ? msg.recipientWallet
+              : undefined,
+        });
+      }
+
+      if (type === 'match_cancelled') {
+        const reason =
+          typeof msg.reason === 'string' && msg.reason
+            ? msg.reason
+            : 'cancelled';
+        setMatchCancelledReason(reason);
+        clearActiveMatchId();
+        setPayoutStatus(null);
+      }
+
+      if (type === 'stake_refunded') {
+        setStakeRefund({
+          amount: Number(msg.amount) || 0,
+          signature:
+            typeof msg.signature === 'string' ? msg.signature : null,
+          reason:
+            typeof msg.reason === 'string' && msg.reason
+              ? msg.reason
+              : 'cancelled',
+        });
+      }
+
+      if (type === 'payout_failed') {
+        setPayoutStatus({
+          matchId: String(msg.matchId ?? ''),
+          ok: false,
+          amount: Number(msg.amount) || 0,
+          reason: typeof msg.reason === 'string' ? msg.reason : undefined,
+          recipientWallet:
+            typeof msg.recipientWallet === 'string'
+              ? msg.recipientWallet
+              : undefined,
+          message: typeof msg.message === 'string' ? msg.message : undefined,
+        });
       }
 
       if (type === 'match_resolved') {
@@ -324,11 +499,31 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
         }
       }
 
+      if (type === 'session_invalid') {
+        /** Server says our sessionStorage room/match lock is stale — drop it and bounce to lobby. */
+        clearActiveRoomId();
+        clearActiveMatchId();
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.close(); } catch { /* noop */ }
+        }
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+          joinedRoomIdRef.current = null;
+        }
+        setRoomState(null);
+        setPlayerId(null);
+        setMatchPlatforms(null);
+        playerIdRef.current = null;
+        navigate('/lobby', { replace: true });
+        return;
+      }
+
       if (type === 'error') {
         const code = msg.code as string | undefined;
         const message = msg.message as string | undefined;
         if (code && ROOM_JOIN_ERRORS.has(code)) {
           clearActiveRoomId();
+          clearActiveMatchId();
         }
         setProtocolError([code, message].filter(Boolean).join(': ') || 'Server error');
       }
@@ -346,6 +541,15 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
       }
     };
   }, [location.pathname, navigate]);
+
+  /** Push wallet changes to the server whenever the WS is open. */
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(
+      JSON.stringify({ type: 'set_wallet_address', walletAddress: walletAddress ?? null }),
+    );
+  }, [walletAddress]);
 
   const toggleReady = useCallback(() => {
     const ws = wsRef.current;
@@ -370,18 +574,36 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
       sendGameMessage,
       subscribeGameMessages,
       matchPlatforms,
+      payoutStatus,
+      clearPayoutStatus,
+      sendStakePaid,
+      sendStakeFailed,
+      matchCancelledReason,
+      stakeRefund,
+      clearStakeBanners,
+      matchExtendedMagPlayers,
+      sendPurchaseExtendedMag,
     }),
     [
+      clearPayoutStatus,
+      clearStakeBanners,
       disconnectSocket,
       exitToLobby,
       forceDisconnectToLobby,
+      matchCancelledReason,
+      matchExtendedMagPlayers,
       matchPlatforms,
+      payoutStatus,
       playerId,
       protocolError,
       roomState,
       sendForfeit,
       sendGameMessage,
+      sendPurchaseExtendedMag,
+      sendStakeFailed,
+      sendStakePaid,
       socketStatus,
+      stakeRefund,
       subscribeGameMessages,
       toggleReady,
     ],

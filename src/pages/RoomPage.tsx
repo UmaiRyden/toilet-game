@@ -1,8 +1,31 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { useGameRealtime } from '../contexts/GameRealtimeContext';
+import { useWallet } from '../hooks/useWallet';
 import { getAppOrigin } from '../lib/env';
+import { EXTENDED_MAG_PRICE } from '../config/solana';
+import {
+  transferExtendedMagFee,
+  transferStakeToTreasury,
+} from '../lib/stakeTransfer';
+import type { StakeStatusValue } from '../types/realtime';
+
+const CANCEL_REASON_COPY: Record<string, string> = {
+  timeout: 'No one confirmed in time.',
+  client_cancel: 'You cancelled the wager.',
+  client_tx_failed: 'Your wallet rejected the transfer.',
+  client_timeout: 'Your wager confirmation timed out.',
+  stake_verification_failed: 'A stake transfer could not be verified on-chain.',
+  player_left: 'A player left the room.',
+  player_disconnected: 'A player disconnected.',
+  opponent_left: 'Your opponent left the room.',
+  opponent_disconnected: 'Your opponent disconnected.',
+};
+
+function humanizeCancelReason(reason: string): string {
+  return CANCEL_REASON_COPY[reason] ?? `Wager cancelled (${reason}).`;
+}
 
 function CountdownOverlay({ endsAt }: { endsAt: number | null }) {
   const [, setTick] = useState(0);
@@ -47,8 +70,26 @@ function CountdownOverlay({ endsAt }: { endsAt: number | null }) {
 export function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
 
-  const { playerId, roomState, socketStatus, protocolError, toggleReady, exitToLobby } =
-    useGameRealtime();
+  const {
+    playerId,
+    roomState,
+    socketStatus,
+    protocolError,
+    toggleReady,
+    exitToLobby,
+    sendStakePaid,
+    sendStakeFailed,
+    matchCancelledReason,
+    stakeRefund,
+    clearStakeBanners,
+    sendPurchaseExtendedMag,
+  } = useGameRealtime();
+  const { publicKey, signTransaction, connection } = useWallet();
+
+  const [paying, setPaying] = useState(false);
+  const [stakeError, setStakeError] = useState<string | null>(null);
+  const [buyingMag, setBuyingMag] = useState(false);
+  const [magError, setMagError] = useState<string | null>(null);
 
   const inviteUrl = useMemo(() => {
     if (!roomId) return '';
@@ -71,6 +112,24 @@ export function RoomPage() {
 
   const waitingForOpponent = Boolean(roomState && roomState.players.length < 2);
   const inCountdown = roomState?.phase === 'countdown';
+  const inStakePending = roomState?.phase === 'stake_pending';
+
+  /** Diagnostic — runs every render so we can see phase transitions in real time. */
+  console.log(
+    `[diag RoomPage render] phase=${roomState?.phase ?? 'NO_ROOM_STATE'} inStakePending=${inStakePending} hasRoomState=${Boolean(roomState)} stakeStatus=${
+      roomState?.stakeStatus ? JSON.stringify(roomState.stakeStatus) : 'null'
+    }`,
+  );
+  console.log(
+    `[diag RoomPage modal-gate] (inStakePending && roomState) = ${Boolean(
+      inStakePending && roomState,
+    )} → ${inStakePending && roomState ? 'WILL render StakeConfirmModal' : 'WILL NOT render modal'}`,
+  );
+
+  const selfStakeStatus: StakeStatusValue | null =
+    (playerId && roomState?.stakeStatus?.[playerId]) || null;
+  const opponentStakeStatus: StakeStatusValue | null =
+    (opponent?.playerId && roomState?.stakeStatus?.[opponent.playerId]) || null;
 
   const phaseCopy = !roomState
     ? 'Syncing…'
@@ -80,9 +139,104 @@ export function RoomPage() {
         ? 'Match starts soon…'
         : roomState.phase === 'starting'
           ? 'Launching match…'
-          : roomState.phase === 'ready_up'
-            ? 'Waiting for ready…'
-            : 'Waiting for opponent…';
+          : inStakePending
+            ? 'Confirm your wager…'
+            : roomState.phase === 'ready_up'
+              ? 'Waiting for ready…'
+              : 'Waiting for opponent…';
+
+  const handlePayStake = useCallback(async () => {
+    if (!roomState || !publicKey || !signTransaction) {
+      setStakeError('Wallet not ready — reconnect Phantom to continue.');
+      return;
+    }
+    setPaying(true);
+    setStakeError(null);
+    try {
+      const sig = await transferStakeToTreasury(
+        connection,
+        { publicKey, signTransaction },
+        roomState.stakeSol,
+      );
+      sendStakePaid(sig);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Stake transfer failed';
+      setStakeError(msg);
+      sendStakeFailed('client_tx_failed');
+    } finally {
+      setPaying(false);
+    }
+  }, [
+    connection,
+    publicKey,
+    roomState,
+    sendStakeFailed,
+    sendStakePaid,
+    signTransaction,
+  ]);
+
+  const handleCancelStake = useCallback(() => {
+    sendStakeFailed('client_cancel');
+  }, [sendStakeFailed]);
+
+  const handleBuyExtendedMag = useCallback(async () => {
+    if (!publicKey || !signTransaction) {
+      setMagError('Connect a Phantom wallet to purchase upgrades.');
+      return;
+    }
+    setBuyingMag(true);
+    setMagError(null);
+    try {
+      const sig = await transferExtendedMagFee(connection, {
+        publicKey,
+        signTransaction,
+      });
+      sendPurchaseExtendedMag(sig);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Upgrade purchase failed';
+      setMagError(msg);
+    } finally {
+      setBuyingMag(false);
+    }
+  }, [connection, publicKey, sendPurchaseExtendedMag, signTransaction]);
+
+  /** Clear any stale upgrade error once the server confirms our purchase. */
+  const alreadyPurchasedMag = Boolean(
+    playerId && roomState?.extendedMag?.[playerId] === true,
+  );
+  useEffect(() => {
+    if (alreadyPurchasedMag) setMagError(null);
+  }, [alreadyPurchasedMag]);
+
+  const upgradesPhaseOk =
+    roomState?.phase === 'waiting_opponent' ||
+    roomState?.phase === 'ready_up';
+  const canSignTx = Boolean(publicKey && signTransaction);
+
+  /** Auto-fail if our own deadline elapses without paying. Server has its own timer too. */
+  useEffect(() => {
+    if (!inStakePending) return;
+    const endsAt = roomState?.stakePendingEndsAt;
+    if (!endsAt) return;
+    if (selfStakeStatus === 'paid') return;
+    const remaining = endsAt - Date.now();
+    if (remaining <= 0) {
+      sendStakeFailed('client_timeout');
+      return;
+    }
+    const t = window.setTimeout(() => {
+      sendStakeFailed('client_timeout');
+    }, remaining);
+    return () => window.clearTimeout(t);
+  }, [inStakePending, roomState?.stakePendingEndsAt, selfStakeStatus, sendStakeFailed]);
+
+  /** Reset local UI state whenever we leave the stake-pending phase. */
+  useEffect(() => {
+    if (!inStakePending) {
+      setStakeError(null);
+      setPaying(false);
+    }
+  }, [inStakePending]);
 
   return (
     <div className="flex flex-1 flex-col gap-6 pb-6">
@@ -99,6 +253,20 @@ export function RoomPage() {
       </header>
 
       {inCountdown ? <CountdownOverlay endsAt={roomState?.countdownEndsAt ?? null} /> : null}
+
+      {inStakePending && roomState ? (
+        <StakeConfirmModal
+          stake={roomState.stakeSol}
+          endsAt={roomState.stakePendingEndsAt ?? null}
+          selfStatus={selfStakeStatus ?? 'pending'}
+          opponentStatus={opponentStakeStatus ?? 'pending'}
+          canSign={Boolean(publicKey && signTransaction)}
+          paying={paying}
+          error={stakeError}
+          onPay={handlePayStake}
+          onCancel={handleCancelStake}
+        />
+      ) : null}
 
       <section className="relative overflow-hidden rounded-3xl border border-white/10 bg-linear-to-br from-slate-900 via-slate-900/90 to-slate-950 px-5 py-7 shadow-xl sm:px-8">
         <div
@@ -151,6 +319,42 @@ export function RoomPage() {
       {protocolError ? (
         <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
           {protocolError}
+        </div>
+      ) : null}
+
+      {matchCancelledReason ? (
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          <div className="min-w-0">
+            <p className="font-semibold">Wager cancelled</p>
+            <p className="mt-0.5 text-xs text-amber-200/80">
+              {humanizeCancelReason(matchCancelledReason)}
+            </p>
+            {stakeRefund ? (
+              <p className="mt-1 text-xs text-emerald-200">
+                Refunded {stakeRefund.amount.toLocaleString()} $TOILET
+                {stakeRefund.signature ? (
+                  <>
+                    {' — '}
+                    <a
+                      href={`https://explorer.solana.com/tx/${stakeRefund.signature}?cluster=devnet`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline-offset-2 hover:underline"
+                    >
+                      view tx ↗
+                    </a>
+                  </>
+                ) : null}
+              </p>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            onClick={clearStakeBanners}
+            className="shrink-0 text-amber-300 underline-offset-2 hover:underline"
+          >
+            Dismiss
+          </button>
         </div>
       ) : null}
 
@@ -212,6 +416,72 @@ export function RoomPage() {
         </div>
       </div>
 
+      <section className="rounded-2xl border border-amber-500/30 bg-linear-to-br from-amber-950/30 via-slate-900 to-slate-950 p-5 shadow-inner shadow-black/20">
+        <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-amber-400/90">
+          Match upgrades
+        </p>
+        <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <h3 className="text-lg font-black tracking-tight text-white">
+              Extended Magazine — 20 rounds{' '}
+              <span className="text-sm font-medium text-slate-500">(was 10)</span>
+            </h3>
+            <p className="mt-1 text-xs text-slate-400">
+              One-time purchase, applies to this match only. Fee is not refunded
+              if the wager is cancelled.
+            </p>
+          </div>
+          <div className="shrink-0 text-right">
+            <p className="font-mono text-2xl font-black tracking-tight text-amber-200">
+              {EXTENDED_MAG_PRICE.toLocaleString()}
+            </p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80">
+              $TOILET
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          {alreadyPurchasedMag ? (
+            <span className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/15 px-4 py-2 text-sm font-bold text-emerald-200">
+              ✓ Purchased
+            </span>
+          ) : !canSignTx ? (
+            <button
+              type="button"
+              disabled
+              className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-500"
+            >
+              Connect wallet to purchase
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleBuyExtendedMag}
+              disabled={buyingMag || !upgradesPhaseOk}
+              title={
+                !upgradesPhaseOk
+                  ? 'Upgrades lock once the wager begins'
+                  : undefined
+              }
+              className="inline-flex items-center gap-2 rounded-lg bg-linear-to-br from-amber-400 to-amber-600 px-5 py-2 text-sm font-bold text-white shadow-md shadow-amber-900/30 transition hover:from-amber-300 hover:to-amber-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {buyingMag
+                ? 'Processing…'
+                : `Buy — ${EXTENDED_MAG_PRICE.toLocaleString()} $TOILET`}
+            </button>
+          )}
+          {magError ? (
+            <p className="mt-2 text-xs text-red-300">{magError}</p>
+          ) : null}
+          {!upgradesPhaseOk && !alreadyPurchasedMag && canSignTx ? (
+            <p className="mt-2 text-xs text-slate-500">
+              Upgrades are locked once the wager begins.
+            </p>
+          ) : null}
+        </div>
+      </section>
+
       <div className="flex flex-wrap gap-3">
         <button
           type="button"
@@ -231,6 +501,161 @@ export function RoomPage() {
           {inCountdown ? 'Countdown running…' : phaseCopy}
         </span>
       </div>
+    </div>
+  );
+}
+
+function StakeConfirmModal({
+  stake,
+  endsAt,
+  selfStatus,
+  opponentStatus,
+  canSign,
+  paying,
+  error,
+  onPay,
+  onCancel,
+}: {
+  stake: number;
+  endsAt: number | null;
+  selfStatus: StakeStatusValue;
+  opponentStatus: StakeStatusValue;
+  canSign: boolean;
+  paying: boolean;
+  error: string | null;
+  onPay: () => void;
+  onCancel: () => void;
+}) {
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!endsAt) {
+      setSecondsLeft(null);
+      return;
+    }
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+      setSecondsLeft(left);
+    };
+    tick();
+    const interval = window.setInterval(tick, 500);
+    return () => window.clearInterval(interval);
+  }, [endsAt]);
+
+  const selfPaid = selfStatus === 'paid';
+  const opponentPaid = opponentStatus === 'paid';
+  const waitingForOpponent = selfPaid && !opponentPaid;
+  const pot = stake * 2;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="stake-confirm-title"
+    >
+      <div className="w-full max-w-md rounded-3xl border border-emerald-500/30 bg-linear-to-br from-slate-900 to-slate-950 p-6 shadow-2xl">
+        <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-emerald-400/90">
+          Confirm wager
+        </p>
+        <h2
+          id="stake-confirm-title"
+          className="mt-2 text-2xl font-black tracking-tight text-white"
+        >
+          Transfer {stake.toLocaleString()} $TOILET
+        </h2>
+        <p className="mt-3 text-sm leading-relaxed text-slate-400">
+          Both players sign a transfer of their stake to the treasury before the
+          match starts. The winner receives the full{' '}
+          <span className="font-semibold text-emerald-300">
+            {pot.toLocaleString()} $TOILET
+          </span>{' '}
+          pot.
+        </p>
+
+        {secondsLeft != null ? (
+          <div className="mt-5 inline-flex items-center gap-2 rounded-full bg-white/5 px-3 py-1 font-mono text-xs text-slate-300">
+            <span aria-hidden>⏱</span>
+            {secondsLeft}s to confirm
+          </div>
+        ) : null}
+
+        {error ? (
+          <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+            {error}
+          </div>
+        ) : null}
+
+        {!canSign ? (
+          <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+            Wallet not ready to sign. Reconnect Phantom to continue, or cancel
+            the wager.
+          </div>
+        ) : null}
+
+        <div className="mt-6 space-y-2">
+          <StakeStatusRow label="You" status={selfStatus} />
+          <StakeStatusRow label="Opponent" status={opponentStatus} />
+        </div>
+
+        <div className="mt-7 flex flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={paying || selfPaid}
+            className="rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-300 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel wager
+          </button>
+          {selfPaid ? (
+            <span className="inline-flex items-center gap-2 rounded-lg bg-emerald-500/10 px-4 py-2 text-sm font-bold text-emerald-200">
+              {waitingForOpponent
+                ? 'Waiting for opponent…'
+                : 'Locking in…'}
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={onPay}
+              disabled={paying || !canSign || selfStatus === 'failed'}
+              className="inline-flex items-center gap-2 rounded-lg bg-linear-to-br from-emerald-400 to-emerald-600 px-5 py-2 text-sm font-bold text-white shadow-md shadow-emerald-900/30 transition hover:from-emerald-300 hover:to-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {paying
+                ? 'Signing…'
+                : `Pay ${stake.toLocaleString()} $TOILET`}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StakeStatusRow({
+  label,
+  status,
+}: {
+  label: string;
+  status: StakeStatusValue;
+}) {
+  const text =
+    status === 'paid'
+      ? '✓ Paid'
+      : status === 'failed'
+        ? '✗ Failed'
+        : '… Pending';
+  const tone =
+    status === 'paid'
+      ? 'text-emerald-300'
+      : status === 'failed'
+        ? 'text-red-300'
+        : 'text-amber-300';
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-lg border border-white/5 bg-slate-900/60 px-3 py-2">
+      <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+        {label}
+      </span>
+      <span className={['text-sm font-bold', tone].join(' ')}>{text}</span>
     </div>
   );
 }
