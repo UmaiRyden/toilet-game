@@ -36,10 +36,36 @@ const DEFAULT_TOKEN_INFO_PATH = path.resolve(
   '../../../scripts/token-info.json',
 );
 
-const KEYPAIR_PATH =
-  (process.env.TREASURY_KEYPAIR_PATH || '').trim() || DEFAULT_KEYPAIR_PATH;
 const TOKEN_INFO_PATH =
   (process.env.TREASURY_TOKEN_INFO_PATH || '').trim() || DEFAULT_TOKEN_INFO_PATH;
+
+/**
+ * Load the treasury keypair. Tries the file path first (local dev), then falls
+ * back to TREASURY_KEYPAIR_JSON env var (Railway / hosted deployments).
+ */
+function loadTreasuryKeypair() {
+  // Try file path first
+  try {
+    const keypairPath =
+      (process.env.TREASURY_KEYPAIR_PATH || '').trim() || DEFAULT_KEYPAIR_PATH;
+    const data = fs.readFileSync(keypairPath, 'utf8');
+    return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(data)));
+  } catch (e) {
+    // File not present — fall through to env var
+  }
+
+  // Try environment variable (set in Railway / production)
+  try {
+    if (process.env.TREASURY_KEYPAIR_JSON) {
+      const secretKey = JSON.parse(process.env.TREASURY_KEYPAIR_JSON);
+      return Keypair.fromSecretKey(Uint8Array.from(secretKey));
+    }
+  } catch (e) {
+    console.error('[payout] Failed to parse TREASURY_KEYPAIR_JSON:', e.message);
+  }
+
+  return null;
+}
 
 /** Lazy singletons — initialized on first payout, retried per call if init failed. */
 let treasury = null;
@@ -49,16 +75,18 @@ let connection = null;
 function initIfNeeded() {
   if (treasury && tokenInfo && connection) return true;
   try {
-    if (!fs.existsSync(KEYPAIR_PATH)) {
-      console.error(`[payout] treasury keypair not found at ${KEYPAIR_PATH}`);
+    treasury = loadTreasuryKeypair();
+    if (!treasury) {
+      console.error(
+        '[payout] treasury keypair unavailable — set TREASURY_KEYPAIR_PATH or TREASURY_KEYPAIR_JSON',
+      );
       return false;
     }
     if (!fs.existsSync(TOKEN_INFO_PATH)) {
       console.error(`[payout] token info not found at ${TOKEN_INFO_PATH}`);
+      treasury = null;
       return false;
     }
-    const keypairRaw = JSON.parse(fs.readFileSync(KEYPAIR_PATH, 'utf8'));
-    treasury = Keypair.fromSecretKey(Uint8Array.from(keypairRaw));
     tokenInfo = JSON.parse(fs.readFileSync(TOKEN_INFO_PATH, 'utf8'));
     connection = new Connection(clusterApiUrl('devnet'), 'confirmed');
     console.log(
