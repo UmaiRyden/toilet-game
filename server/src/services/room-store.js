@@ -72,6 +72,8 @@ const EMPTY_ROOM_TTL_MS = 10 * 60 * 1000;
 const MATCH_RECORD_TTL_MS = 2 * 60 * 60 * 1000;
 const READY_COUNTDOWN_MS = 5000;
 const RECONNECT_GRACE_MS = 60 * 1000;
+/** Mid-match disconnect: auto-award win to opponent if player doesn't return in time. */
+const MATCH_DISCONNECT_GRACE_MS = 30 * 1000;
 const REMATCH_WINDOW_MS = 15 * 1000;
 const ROUNDS_TO_WIN_MATCH = 2;
 /** Window for both players to sign + confirm their on-chain stake transfer. */
@@ -198,7 +200,7 @@ function roomPhase(room) {
 /** @param {Room} room @param {string} selfPlayerId */
 function roomStatePayload(room, selfPlayerId) {
   const phase = roomPhase(room);
-  return {
+  const payload = {
     type: 'room_state',
     roomId: room.id,
     stakeSol: room.stakeSol,
@@ -217,7 +219,12 @@ function roomStatePayload(room, selfPlayerId) {
       isHost: seat === 0,
       hasWallet: Boolean(p.walletAddress),
     })),
+    // Include match-specific data so clients can restore state after a refresh
+    activeMatchId: room.activeMatchId ?? null,
+    platforms: (phase === 'in_match' && room.gameState?.platforms) ? room.gameState.platforms : null,
+    extendedMagPlayers: (phase === 'in_match' && room.gameState?.extendedMagPlayers) ? room.gameState.extendedMagPlayers : [],
   };
+  return payload;
 }
 
 /** @param {Room} room */
@@ -478,6 +485,7 @@ function triggerWinnerPayout(
 async function resolveMatchByElimination(room, matchId, winner, loser) {
   if (!room.activeMatchId || room.activeMatchId !== matchId) return;
 
+  clearRoomTimer(room.id, 'midMatchDisconnect');
   const stakeSol = room.stakeSol;
   const potSol = stakeSol * 2;
   const winnerPlayerId = winner.playerId;
@@ -581,6 +589,7 @@ async function finalizeRematchWindow(roomId, matchId) {
  */
 async function forfeitMatch(room, matchId, forfeitingWs) {
   if (!room.activeMatchId || room.activeMatchId !== matchId) return;
+  clearRoomTimer(room.id, 'midMatchDisconnect');
   const idx = room.players.findIndex((p) => p.ws === forfeitingWs);
   if (idx === -1) return;
 
@@ -638,6 +647,79 @@ async function forfeitMatch(room, matchId, forfeitingWs) {
   room.players.forEach((p) => {
     p.ready = false;
   });
+
+  await saveRoom(room);
+  broadcastRoom(room);
+  await broadcastLobby();
+}
+
+/**
+ * Auto-resolve a match after one player failed to reconnect within the grace window.
+ * @param {Room} room
+ * @param {string} matchId
+ * @param {string} winnerPlayerId
+ * @param {string} loserPlayerId
+ */
+async function resolveMatchByDisconnect(room, matchId, winnerPlayerId, loserPlayerId) {
+  if (!room.activeMatchId || room.activeMatchId !== matchId) return;
+
+  const stakeSol = room.stakeSol;
+  const potSol = stakeSol * 2;
+
+  room.activeMatchId = null;
+  await deleteMatch(matchId);
+
+  const winnerEntry = room.players.find((p) => p.playerId === winnerPlayerId) ?? null;
+  const loserEntry  = room.players.find((p) => p.playerId === loserPlayerId)  ?? null;
+  const winnerWs = winnerEntry?.ws ?? null;
+  const loserWs  = loserEntry?.ws  ?? null;
+
+  const overPayload = JSON.stringify({
+    type: 'game_over',
+    matchId,
+    winnerPlayerId,
+    loserPlayerId,
+  });
+  if (winnerWs?.readyState === 1) winnerWs.send(overPayload);
+  if (loserWs?.readyState  === 1) loserWs.send(overPayload);
+
+  const winnerWallet = room.gameState?.walletAddresses?.[winnerPlayerId] ?? null;
+  const resolution = JSON.stringify({
+    type: 'match_resolved',
+    reason: 'disconnect',
+    matchId,
+    roomId: room.id,
+    winnerPlayerId,
+    loserPlayerId,
+    winnerWallet,
+    stakeSol,
+    potSol,
+    payoutNote: 'opponent disconnected — winner takes pot',
+  });
+  if (winnerWs?.readyState === 1) winnerWs.send(resolution);
+  if (loserWs?.readyState  === 1) loserWs.send(resolution);
+
+  const roundsWon = room.gameState?.roundsWon ?? {};
+  triggerWinnerPayout(
+    room,
+    matchId,
+    winnerPlayerId,
+    loserPlayerId,
+    'disconnect',
+    potSol,
+    { playerId: winnerPlayerId, ws: winnerWs },
+    {
+      stakeSol,
+      roomId: room.id,
+      roundsWonWinner: Number(roundsWon[winnerPlayerId] ?? 0),
+      roundsWonLoser:  Number(roundsWon[loserPlayerId]  ?? 0),
+    },
+  );
+
+  await clearPlayerRoom(loserPlayerId);
+  room.players = room.players.filter((p) => p.playerId !== loserPlayerId);
+  room.players.forEach((p) => { p.ready = false; });
+  room.gameState = null;
 
   await saveRoom(room);
   broadcastRoom(room);
@@ -905,7 +987,39 @@ async function disconnectFromRoom(ws) {
   }
 
   if (room.activeMatchId) {
-    await forfeitMatch(room, room.activeMatchId, ws);
+    // Don't forfeit immediately — give the player 30 s to reconnect.
+    const matchId = room.activeMatchId;
+    const disconnectedPlayerId = room.players[idx].playerId;
+    const connectedPlayer = room.players[idx === 0 ? 1 : 0];
+
+    room.players[idx].disconnectedAt = Date.now();
+    room.players[idx].ws = null;
+    ws.roomId = null;
+    await saveRoom(room);
+
+    // Notify the still-connected opponent so they can show a waiting UI.
+    if (connectedPlayer?.ws?.readyState === 1) {
+      connectedPlayer.ws.send(
+        JSON.stringify({
+          type: 'game_opponent_disconnected',
+          reconnectGraceMs: MATCH_DISCONNECT_GRACE_MS,
+        }),
+      );
+    }
+
+    const roomId = room.id;
+    clearRoomTimer(roomId, 'midMatchDisconnect');
+    getTimerSlot(roomId).midMatchDisconnect = setTimeout(async () => {
+      clearRoomTimer(roomId, 'midMatchDisconnect');
+      const r = await loadRoom(roomId);
+      if (!r || !r.activeMatchId || r.activeMatchId !== matchId) return;
+      const disconnected = r.players.find((p) => p.playerId === disconnectedPlayerId);
+      const connected    = r.players.find((p) => p.playerId !== disconnectedPlayerId);
+      if (!disconnected || !connected) return;
+      // If they reconnected in time, ws will be live again — cancel the resolution.
+      if (disconnected.ws && disconnected.ws.readyState === 1) return;
+      await resolveMatchByDisconnect(r, matchId, connected.playerId, disconnected.playerId);
+    }, MATCH_DISCONNECT_GRACE_MS);
     return;
   }
   if (room.stakePending) {
@@ -1201,6 +1315,7 @@ export async function dispatchMessage(ws, text) {
           existing.ws = ws;
           existing.disconnectedAt = null;
           ws.roomId = roomId;
+          clearRoomTimer(roomId, 'midMatchDisconnect');
           await setPlayerRoom(existing.playerId, roomId);
           await saveRoom(room);
           broadcastRoom(room);
@@ -1214,6 +1329,7 @@ export async function dispatchMessage(ws, text) {
         seated.ws = ws;
         seated.disconnectedAt = null;
         ws.roomId = roomId;
+        clearRoomTimer(roomId, 'midMatchDisconnect');
         await setPlayerRoom(ws.playerId, roomId);
         await saveRoom(room);
         broadcastRoom(room);

@@ -12,7 +12,13 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 import { getClientSessionId } from '../lib/clientSession';
 import { getRealtimeWsUrl } from '../lib/realtime';
-import { clearActiveMatchId, setActiveMatchId } from '../lib/matchSession';
+import {
+  clearActiveMatchId,
+  clearActiveMatchRoomId,
+  getActiveMatchRoomId,
+  setActiveMatchId,
+  setActiveMatchRoomId,
+} from '../lib/matchSession';
 import { clearActiveRoomId, setActiveRoomId } from '../lib/roomSession';
 import { useWallet } from '../hooks/useWallet';
 import type {
@@ -156,6 +162,7 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
   const exitToLobby = useCallback(() => {
     clearActiveRoomId();
     clearActiveMatchId();
+    clearActiveMatchRoomId();
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'leave_room' }));
@@ -173,6 +180,7 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
   const forceDisconnectToLobby = useCallback(() => {
     clearActiveRoomId();
     clearActiveMatchId();
+    clearActiveMatchRoomId();
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'leave_room' }));
@@ -190,6 +198,7 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
   const disconnectSocket = useCallback(() => {
     clearActiveRoomId();
     clearActiveMatchId();
+    clearActiveMatchRoomId();
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'leave_room' }));
@@ -231,16 +240,20 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    if (matchM && !wsRef.current) {
+    // On a match page with no live WS, try to rejoin using the stored room ID.
+    // This handles a page refresh mid-match.
+    const reconnectRoomId = (matchM && !wsRef.current) ? getActiveMatchRoomId() : null;
+
+    if (matchM && !reconnectRoomId) {
       setSocketStatus((s) => (s === 'open' ? s : 'closed'));
       return;
     }
 
-    if (!roomM) {
+    if (!roomM && !reconnectRoomId) {
       return;
     }
 
-    const roomId = decodeURIComponent(roomM[1]);
+    const roomId = reconnectRoomId ?? decodeURIComponent(roomM![1]);
 
     if (wsRef.current?.readyState === WebSocket.OPEN && joinedRoomIdRef.current === roomId) {
       return;
@@ -345,6 +358,19 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
           }
           extendedMag = out;
         }
+        // Restore match-specific state on reconnect (refresh lands on /match/:id)
+        if (msg.phase === 'in_match') {
+          if (msg.platforms != null) setMatchPlatforms(parsePlatforms(msg.platforms));
+          if (Array.isArray(msg.extendedMagPlayers)) {
+            setMatchExtendedMagPlayers(
+              (msg.extendedMagPlayers as unknown[]).filter((v): v is string => typeof v === 'string'),
+            );
+          }
+          if (typeof msg.activeMatchId === 'string' && msg.activeMatchId) {
+            setActiveMatchId(msg.activeMatchId);
+          }
+        }
+
         setRoomState({
           roomId: rid || (typeof msg.roomId === 'string' ? msg.roomId.trim() : ''),
           stakeSol: Number(msg.stakeSol),
@@ -382,6 +408,7 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
           navigatingToMatchRef.current = true;
           clearActiveRoomId();
           setActiveMatchId(mid);
+          if (rid) setActiveMatchRoomId(rid);
           setMatchPlatforms(platforms);
           navigate(`/match/${encodeURIComponent(mid)}`, { state: rid ? { roomId: rid } : undefined });
         }
@@ -445,6 +472,7 @@ export function GameRealtimeProvider({ children }: { children: ReactNode }) {
         const rid = typeof msg.roomId === 'string' ? msg.roomId.trim() : '';
         const pid = playerIdRef.current;
         clearActiveMatchId();
+        clearActiveMatchRoomId();
         const applyNavigation = () => {
           if (winnerId && loserId && rid && pid) {
             if (winnerId === pid) {

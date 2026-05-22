@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useGameRealtime } from '../contexts/GameRealtimeContext';
 import { useSettings } from '../contexts/SettingsContext';
@@ -8,11 +8,13 @@ import { PhaserGame } from '../game/PhaserGame';
 
 export function MatchPage() {
   const { matchId } = useParams<{ matchId: string }>();
+  const navigate = useNavigate();
 
   const {
     sendForfeit,
     playerId,
     roomState,
+    socketStatus,
     sendGameMessage,
     subscribeGameMessages,
     matchPlatforms,
@@ -22,8 +24,7 @@ export function MatchPage() {
     matchExtendedMagPlayers,
   } = useGameRealtime();
   const { settings } = useSettings();
-  /** Hook still runs so the session-failure side effects fire; UI is hidden. */
-  useMatchSession(matchId);
+  const verifyState = useMatchSession(matchId);
 
   const [forfeitOpen, setForfeitOpen] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -54,6 +55,17 @@ export function MatchPage() {
   const isDemo = matchId === 'demo';
   const isDevSkip = matchId?.startsWith('dev-') ?? false;
   const canUseCasualNav = isDemo || isDevSkip;
+
+  // Redirect to lobby if session verification explicitly fails (match expired / invalid)
+  useEffect(() => {
+    if (verifyState === 'failed' && !isDemo && !isDevSkip) {
+      navigate('/lobby', { replace: true });
+    }
+  }, [verifyState, isDemo, isDevSkip, navigate]);
+
+  // True while we're waiting for the WS to reconnect and room state to arrive after a refresh.
+  // Don't start Phaser until this is resolved so isLiveMatch is accurate.
+  const isReconnecting = !isDemo && !isDevSkip && (!playerId || !roomState);
 
   const selfPlayer = playerId
     ? roomState?.players.find((p) => p.playerId === playerId) ?? null
@@ -99,15 +111,19 @@ export function MatchPage() {
           >
             <span aria-hidden>⏸</span>
           </button>
-          {!canUseCasualNav ? (
-            <button
-              type="button"
-              onClick={() => setForfeitOpen(true)}
-              className="text-xs font-medium text-slate-500 transition hover:text-red-400"
-            >
-              Resign
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={() => {
+              if (canUseCasualNav) {
+                exitToLobby(); // demo/dev — no stake, no confirmation needed
+              } else {
+                setForfeitOpen(true);
+              }
+            }}
+            className="text-xs font-medium text-slate-500 transition hover:text-red-400"
+          >
+            Resign
+          </button>
         </div>
       </header>
 
@@ -150,6 +166,15 @@ export function MatchPage() {
       ) : null}
 
       <div className="relative flex flex-1 overflow-hidden bg-black">
+        {isReconnecting ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-4">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/10 border-t-emerald-400" />
+            <p className="text-sm font-semibold text-slate-300">Reconnecting to match…</p>
+            <p className="text-xs text-slate-500">
+              {socketStatus === 'connecting' ? 'Connecting to server' : 'Waiting for room state'}
+            </p>
+          </div>
+        ) : (
         <PhaserGame
           isDemo={!isLiveMatch}
           matchId={matchId ?? ''}
@@ -167,6 +192,7 @@ export function MatchPage() {
           exitToLobby={exitToLobby}
           onPauseAllowedChange={onPauseAllowedChange}
         />
+        )}
         {isLiveMatch && payoutStatus ? (
           <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-3">
             <div
