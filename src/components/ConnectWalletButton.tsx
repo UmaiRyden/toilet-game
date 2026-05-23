@@ -4,10 +4,11 @@ import { useWallet as useWalletAdapter } from '@solana/wallet-adapter-react';
 import { useWallet } from '../hooks/useWallet';
 
 function detectPhantom(): boolean {
-  const w = window as Record<string, unknown>;
-  const phantom = w.phantom as Record<string, unknown> | undefined;
-  const solana = w.solana as Record<string, unknown> | undefined;
-  return !!(phantom?.solana) || !!(solana?.isPhantom);
+  const w = window as Window & {
+    phantom?: { solana?: { isPhantom?: boolean } };
+    solana?: { isPhantom?: boolean };
+  };
+  return !!(w.phantom?.solana) || !!(w.solana?.isPhantom);
 }
 
 export function ConnectWalletButton() {
